@@ -1,18 +1,19 @@
-(defun c:BLK_BOUND_ADV (/ ent insPt rot scaleX scaleY scaleZ blkName blkDef 
-                          minPt maxPt allMin allMax objMin objMax 
-                          p1 p2 p3 p4 mat)
+(defun c:BLK_BOUND_FIX (/ ent obj insPt rot sx sy sz blkName blkDef 
+                          allMin allMax oName tmpMin tmpMax p1 p2 p3 p4)
   (vl-load-com)
 
   ;; 1. 블록 선택
-  (setq ent (car (entsel "\n경계를 추출할 블록을 선택하세요: ")))
+  (setq ent (car (entsel "\n블록을 선택하세요: ")))
   
   (if (and ent (= (cdr (assoc 0 (entget ent))) "INSERT"))
     (progn
       (setq obj (vlax-ename->vla-object ent)
             insPt (vlax-safearray->list (vlax-variant-value (vla-get-InsertionPoint obj)))
             rot (vla-get-Rotation obj)
-            scaleX (vla-get-ScaleFactor obj)
-            scaleY (vla-get-ScaleFactor obj) ;; 일반적인 블록 기준
+            ;; [수정] 축척은 X, Y, Z 각각 가져와야 함
+            sx (vla-get-ScaleFactorX obj)
+            sy (vla-get-ScaleFactorY obj)
+            sz (vla-get-ScaleFactorZ obj)
             blkName (vla-get-Name obj)
             blkDef (vla-item (vla-get-blocks (vla-get-activedocument (vlax-get-acad-object))) blkName)
             allMin nil
@@ -21,63 +22,47 @@
       ;; 2. 블록 내부 객체 순회 (OLE, HATCH 제외)
       (vlax-for subObj blkDef
         (setq oName (vla-get-ObjectName subObj))
+        ;; OLE와 Hatch는 계산에서 완전히 제외
         (if (not (or (wcmatch oName "AcDbOle*") (wcmatch oName "AcDbHatch")))
-          (if (not (vl-catch-all-error-p (vl-catch-all-apply 'vla-getboundingbox (list subObj 'objMin 'objMax))))
+          (if (not (vl-catch-all-error-p (vl-catch-all-apply 'vla-getboundingbox (list subObj 'tmpMin 'tmpMax))))
             (progn
-              (setq tmpMin (vlax-safearray->list objMin)
-                    tmpMax (vlax-safearray->list objMax))
+              (setq minL (vlax-safearray->list tmpMin)
+                    maxL (vlax-safearray->list tmpMax))
               
-              ;; 전체 최소/최대값 갱신 (블록 내부 좌표계 기준)
               (if (null allMin)
-                (setq allMin tmpMin allMax tmpMax)
-                (setq allMin (mapcar 'min allMin tmpMin)
-                      allMax (mapcar 'max allMax tmpMax))
+                (setq allMin minL allMax maxL)
+                (setq allMin (mapcar 'min allMin minL)
+                      allMax (mapcar 'max allMax maxL))
               )
             )
           )
         )
       )
 
-      ;; 3. 추출된 좌표를 실제 도면 좌표(WCS)로 변환
+      ;; 3. 좌표 변환 및 출력
       (if (and allMin allMax)
-        (progn
-          ;; 블록 내부 4개 꼭지점 정의
-          (setq p1 allMin
-                p2 (list (car allMax) (cadr allMin) (caddr allMin))
-                p3 allMax
-                p4 (list (car allMin) (cadr allMax) (caddr allMin)))
-
-          ;; 좌표 변환 함수 (회전 및 축척 적용)
-          (defun transform-pt (pt ins r sx sy / x y nx ny)
-            (setq x (* (car pt) sx)
-                  y (* (cadr pt) sy))
-            (setq nx (+ (- (* x (cos r)) (* y (sin r))) (car ins))
-                  ny (+ (+ (* x (sin r)) (* y (cos r))) (cadr ins)))
-            (list nx ny (caddr ins))
-          )
-
-          ;; 최종 4개 꼭지점 계산
-          (setq p1 (transform-pt p1 insPt rot scaleX scaleY)
-                p2 (transform-pt p2 insPt rot scaleX scaleY)
-                p3 (transform-pt p3 insPt rot scaleX scaleY)
-                p4 (transform-pt p4 insPt rot scaleX scaleY))
-
-          ;; 4. 결과 출력
-          (princ "\n--- [OLE/Hatch 제외] 실제 좌표 결과 ---")
-          (princ (strcat "\n좌하단 (P1): " (vl-prin1-to-string p1)))
-          (princ (strcat "\n우하단 (P2): " (vl-prin1-to-string p2)))
-          (princ (strcat "\n우상단 (P3): " (vl-prin1-to-string p3)))
-          (princ (strcat "\n좌상단 (P4): " (vl-prin1-to-string p4)))
+        (let ( (tr-pt (lambda (pt)
+                        (let* ((x (* (car pt) sx))
+                               (y (* (cadr pt) sy))
+                               (nx (+ (- (* x (cos rot)) (* y (sin rot))) (car insPt)))
+                               (ny (+ (+ (* x (sin rot)) (* y (cos rot))) (cadr insPt))))
+                          (list nx ny (+ (caddr pt) (caddr insPt)))))) )
           
-          ;; 시각적 확인용 (점 생성)
-          (vla-put-Coordinates (vla-addPolyline (vla-get-ModelSpace (vla-get-ActiveDocument (vlax-get-acad-object))) 
-            (vlax-make-variant (vlax-safearray-fill (vlax-make-safearray vlax-vbDouble '(0 . 11)) 
-            (append p1 p2 p3 p4)))) 1)
+          (setq p1 (tr-pt allMin) ;; 좌하
+                p2 (tr-pt (list (car allMax) (cadr allMin) (caddr allMin))) ;; 우하
+                p3 (tr-pt allMax) ;; 우상
+                p4 (tr-pt (list (car allMin) (cadr allMax) (caddr allMin)))) ;; 좌상
+
+          (princ "\n--- [추출된 실제 좌표] ---")
+          (princ (strcat "\n좌측 하단: " (vl-prin1-to-string p1)))
+          (princ (strcat "\n우측 하단: " (vl-prin1-to-string p2)))
+          (princ (strcat "\n우측 상단: " (vl-prin1-to-string p3)))
+          (princ (strcat "\n좌측 상단: " (vl-prin1-to-string p4)))
         )
-        (princ "\n계산 가능한 객체가 블록 내부에 없습니다.")
+        (princ "\n오류: OLE/해치를 제외하면 블록 내에 계산 가능한 객체가 없습니다.")
       )
     )
-    (princ "\n선택한 객체가 블록(INSERT)이 아닙니다.")
+    (princ "\n블록(INSERT) 객체가 아닙니다.")
   )
   (princ)
 )
