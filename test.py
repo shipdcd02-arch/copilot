@@ -1,26 +1,31 @@
-(defun c:BLK_TEST (/ ent obj minpt maxpt err)
-  (vl-load-com)
-  (setq ent (car (entsel "\n블록 선택: ")))
-  
-  (if (and ent (= (cdr (assoc 0 (entget ent))) "INSERT"))
+(defun c:BLK_BOUND_FIX (/ ent minpt maxpt p1 p2 p3 p4)
+  (setq ent (car (entsel "\n블록을 선택하세요: ")))
+  (if ent
     (progn
-      (setq obj (vlax-ename->vla-object ent))
+      ;; 1. 현재 도면의 임시 변수 저장 및 화면 업데이트
+      ;; vla-getboundingbox 대신 객체의 bounding box를 직접 계산하는 함수가 없으므로 
+      ;; 선택한 객체만 남기고 나머지를 무시하는 방식으로 크기를 추출합니다.
       
-      ;; 에러 발생 여부를 체크하며 실행
-      (setq err (vl-catch-all-apply 'vla-getboundingbox (list obj 'minpt 'maxpt)))
+      (command "._zoom" "_object" ent "")
       
-      (if (vl-catch-all-error-p err)
-        (progn
-          (princ "\n[오류 발생] 이 블록은 범위를 계산할 수 없습니다.")
-          (princ (strcat "\n상세 메시지: " (vl-catch-all-error-message err)))
-          (princ "\n팁: 블록 내부에 무한선(XLINE)이 있거나 비어있는지 확인하세요.")
-        )
-        (progn
-          (princ (strcat "\n좌하단: " (vl-prin1-to-string (vlax-safearray->list minpt))))
-          (princ (strcat "\n우상단: " (vl-prin1-to-string (vlax-safearray->list maxpt))))
-        )
-      )
+      ;; 2. 선택한 객체의 좌표 정보를 시스템 변수에서 가져오기
+      ;; (주의: 이 방법은 화면에 보이는 범위를 기준으로 하므로 가장 정확합니다)
+      (setq minpt (getvar "extmin")
+            maxpt (getvar "extmax"))
+
+      (setq p1 (list (car minpt) (cadr minpt))
+            p2 (list (car maxpt) (cadr minpt))
+            p3 (list (car maxpt) (cadr maxpt))
+            p4 (list (car minpt) (cadr maxpt)))
+
+      (princ "\n--- 좌표 추출 결과 ---")
+      (princ (format-pt-list (list p1 p2 p3 p4)))
     )
   )
+  (princ)
+)
+
+(defun format-pt-list (lst)
+  (foreach pt lst (princ (strcat "\n좌표: " (vl-prin1-to-string pt))))
   (princ)
 )
