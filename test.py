@@ -88,10 +88,27 @@ def get_profiles(prod_path):
     return profiles
 
 
+def expand_path(path):
+    """레지스트리 경로에 포함된 환경변수 및 특수문자 처리"""
+    if not path:
+        return path
+    # %변수% 형태 확장
+    path = os.path.expandvars(path)
+    # "." 으로 시작하는 상대경로 처리 (AutoCAD가 .\ 로 저장하는 경우)
+    if path.startswith("."):
+        return None
+    return path
+
+
 def get_plotters_paths(prod_path):
     """레지스트리에서 Plotters 경로(PC3)와 Plot Styles 경로(CTB) 자동 탐색"""
     plotters_path = None
     plotstyles_path = None
+
+    # --- 방법 1: Profiles\<프로필>\General 에서 탐색 ---
+    # 버전별로 키 이름이 다를 수 있으므로 후보 목록으로 시도
+    pc3_key_candidates  = ["PrinterConfigDir", "PRINTERCONDIR", "PrinterRootDir"]
+    ctb_key_candidates  = ["PrinterStyleSheetDir", "PRINTERSTYLEDIR", "PrinterStyleRoot"]
 
     try:
         profiles_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, prod_path + r"\Profiles")
@@ -102,18 +119,29 @@ def get_plotters_paths(prod_path):
                 general_key_path = prod_path + rf"\Profiles\{prof}\General"
                 try:
                     gk = winreg.OpenKey(winreg.HKEY_CURRENT_USER, general_key_path)
-                    try:
-                        val, _ = winreg.QueryValueEx(gk, "PrinterConfigDir")
-                        if val and os.path.isdir(val):
-                            plotters_path = val
-                    except:
-                        pass
-                    try:
-                        val, _ = winreg.QueryValueEx(gk, "PrinterStyleSheetDir")
-                        if val and os.path.isdir(val):
-                            plotstyles_path = val
-                    except:
-                        pass
+
+                    if not plotters_path:
+                        for key_name in pc3_key_candidates:
+                            try:
+                                val, _ = winreg.QueryValueEx(gk, key_name)
+                                val = expand_path(val)
+                                if val and os.path.isdir(val):
+                                    plotters_path = val
+                                    break
+                            except:
+                                pass
+
+                    if not plotstyles_path:
+                        for key_name in ctb_key_candidates:
+                            try:
+                                val, _ = winreg.QueryValueEx(gk, key_name)
+                                val = expand_path(val)
+                                if val and os.path.isdir(val):
+                                    plotstyles_path = val
+                                    break
+                            except:
+                                pass
+
                     winreg.CloseKey(gk)
                 except:
                     pass
@@ -125,6 +153,45 @@ def get_plotters_paths(prod_path):
         winreg.CloseKey(profiles_key)
     except:
         pass
+
+    # --- 방법 2: 레지스트리 못 찾으면 기본 경로 패턴으로 fallback ---
+    if not plotters_path or not plotstyles_path:
+        appdata = os.environ.get("APPDATA", "")
+        # AutoCAD 버전별 기본 경로 패턴
+        # ex) C:\Users\xxx\AppData\Roaming\Autodesk\AutoCAD 2024\R24.3\kor\Plotters
+        autodesk_root = os.path.join(appdata, "Autodesk")
+        if os.path.isdir(autodesk_root):
+            for folder in sorted(os.listdir(autodesk_root), reverse=True):
+                acad_dir = os.path.join(autodesk_root, folder)
+                if not os.path.isdir(acad_dir):
+                    continue
+                # 하위 버전 폴더 (R24.x 등) 탐색
+                for sub in os.listdir(acad_dir):
+                    sub_dir = os.path.join(acad_dir, sub)
+                    if not os.path.isdir(sub_dir):
+                        continue
+                    # 언어 폴더 (kor, en-US 등) 탐색
+                    for lang in os.listdir(sub_dir):
+                        lang_dir = os.path.join(sub_dir, lang)
+                        if not os.path.isdir(lang_dir):
+                            continue
+
+                        if not plotters_path:
+                            candidate = os.path.join(lang_dir, "Plotters")
+                            if os.path.isdir(candidate):
+                                plotters_path = candidate
+
+                        if not plotstyles_path:
+                            candidate = os.path.join(lang_dir, "Plotters", "Plot Styles")
+                            if os.path.isdir(candidate):
+                                plotstyles_path = candidate
+
+                        if plotters_path and plotstyles_path:
+                            break
+                    if plotters_path and plotstyles_path:
+                        break
+                if plotters_path and plotstyles_path:
+                    break
 
     return plotters_path, plotstyles_path
 
