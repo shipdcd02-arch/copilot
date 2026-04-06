@@ -41,10 +41,14 @@ def convert_single(accoreconsole_path, sat_path, log_queue):
     scr_path = os.path.join(folder, f"_tmp_{filename}.scr")
 
     # .scr 파일을 cp949로 작성 (한글 AutoCAD 필수)
+    # _SAVEAS: 포맷(2018)과 파일명을 별도 줄로 전달, 따옴표 없이
     script = (
         f'_ACISIN "{sat_path}"\n'
-        f'_SAVEAS "2018" "{dwg_path}"\n'
+        f'_SAVEAS\n'
+        f'2018\n'
+        f'"{dwg_path}"\n'
         f'_QUIT Y\n'
+        f'\n'
     )
 
     try:
@@ -229,7 +233,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-"C:\Program Files\Autodesk\AutoCAD 2018\accoreconsole.exe" ^
-  /s "C:\test\test.scr" /nologo /nohardware /p "<<AutoCAD Defaults>>"
