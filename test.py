@@ -38,10 +38,9 @@ def convert_single(accoreconsole_path, sat_path, log_queue):
     filename = os.path.splitext(os.path.basename(sat_path))[0]
     folder = os.path.dirname(sat_path)
     dwg_path = os.path.join(folder, filename + ".dwg")
-    scr_path = os.path.join(folder, f"_tmp_{filename}.scr")
 
-    # .scr 파일을 cp949로 작성 (한글 AutoCAD 필수)
-    # _SAVEAS: 포맷(2018)과 파일명을 별도 줄로 전달, 따옴표 없이
+    # stdin으로 직접 전달 (scr 파일 불필요)
+    # _SAVEAS: 포맷과 파일명을 별도 줄, 따옴표 없이
     script = (
         f'_ACISIN "{sat_path}"\n'
         f'_SAVEAS\n'
@@ -52,17 +51,14 @@ def convert_single(accoreconsole_path, sat_path, log_queue):
     )
 
     try:
-        with open(scr_path, "w", encoding="cp949", errors="replace") as f:
-            f.write(script)
-
         result = subprocess.run(
             [
                 accoreconsole_path,
-                "/s", scr_path,
                 "/nologo",
                 "/nohardware",
                 "/p", "<<AutoCAD Defaults>>",
             ],
+            input=script.encode("cp949", errors="replace"),
             capture_output=True,
             timeout=300,
             creationflags=subprocess.CREATE_NO_WINDOW,
@@ -87,9 +83,6 @@ def convert_single(accoreconsole_path, sat_path, log_queue):
     except Exception as e:
         log_queue.put(("err", f"[오류] {filename}.sat — {e}"))
         return False
-    finally:
-        if os.path.exists(scr_path):
-            os.remove(scr_path)
 
 
 # ──────────────────────────────────────────────
