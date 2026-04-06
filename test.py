@@ -229,3 +229,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+"C:\Program Files\Autodesk\AutoCAD 2018\accoreconsole.exe" ^
+  /s "C:\test\test.scr" /nologo /nohardware /p "<<AutoCAD Defaults>>"
