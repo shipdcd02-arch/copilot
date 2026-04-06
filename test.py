@@ -42,31 +42,32 @@ def convert_single(accoreconsole_path, sat_path, log_queue):
     filename = os.path.splitext(os.path.basename(sat_path))[0]
     folder = os.path.dirname(sat_path)
     dwg_path = os.path.join(folder, filename + ".dwg")
-    scr_path = os.path.join(folder, f"_tmp_{filename}.scr")
+
+    # LISP 코드를 stdin으로 직접 전달 (scr 파일 없음)
+    lisp = (
+        f'(command "_.ACISIN" "{sat_path}")\n'
+        f'(command "_.SAVEAS" "2018" "{dwg_path}")\n'
+        f'(quit)\n'
+    )
 
     try:
-        # 스크립트 작성
-        with open(scr_path, "w", encoding="utf-8") as f:
-            f.write(f'_ACISIN "{sat_path}"\n')
-            f.write(f'_SAVEAS "2018" "{dwg_path}"\n')
-            f.write("_QUIT Y\n")
-
-        cmd = [accoreconsole_path, "/s", scr_path]
         result = subprocess.run(
-            cmd,
+            [accoreconsole_path],
+            input=lisp.encode("cp949", errors="replace"),
             capture_output=True,
-            text=True,
             timeout=120,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
+
+        stdout = result.stdout.decode("cp949", errors="replace")
 
         if os.path.exists(dwg_path):
             log_queue.put(("ok", f"[완료] {filename}.dwg"))
             return True
         else:
             log_queue.put(("err", f"[실패] {filename}.sat — DWG 파일 미생성"))
-            if result.stdout:
-                log_queue.put(("err", f"       {result.stdout.strip()[:200]}"))
+            if stdout.strip():
+                log_queue.put(("err", f"       {stdout.strip()[:200]}"))
             return False
 
     except subprocess.TimeoutExpired:
@@ -75,9 +76,6 @@ def convert_single(accoreconsole_path, sat_path, log_queue):
     except Exception as e:
         log_queue.put(("err", f"[오류] {filename}.sat — {e}"))
         return False
-    finally:
-        if os.path.exists(scr_path):
-            os.remove(scr_path)
 
 
 # ──────────────────────────────────────────────
