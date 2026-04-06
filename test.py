@@ -38,40 +38,72 @@ def find_accoreconsole():
     return None
 
 
-def convert_single(accoreconsole_path, sat_path, log_queue):
+def find_template_dwt(accoreconsole_path):
+    """accoreconsole 옆 Template 폴더에서 DWT 파일 탐색"""
+    acad_dir = os.path.dirname(accoreconsole_path)
+    candidates = [
+        os.path.join(acad_dir, "Template", "acad.dwt"),
+        os.path.join(acad_dir, "Template", "acadiso.dwt"),
+        os.path.join(acad_dir, "Template", "acad3d.dwt"),
+    ]
+    # 로밍 프로파일 경로도 탐색
+    appdata = os.environ.get("APPDATA", "")
+    for sub in ["R22.0", "R21.0", "R20.0"]:
+        for lang in ["kor", "enu"]:
+            candidates.append(
+                os.path.join(appdata, "Autodesk", "AutoCAD 2018",
+                             sub, lang, "Template", "acad.dwt")
+            )
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def convert_single(accoreconsole_path, template_dwt, sat_path, log_queue):
     filename = os.path.splitext(os.path.basename(sat_path))[0]
     folder = os.path.dirname(sat_path)
     dwg_path = os.path.join(folder, filename + ".dwg")
 
-    # LISP 코드를 stdin으로 직접 전달 (scr 파일 없음)
+    # stdin으로 전달할 LISP 명령 (SCR 파일 불필요)
     lisp = (
         f'(command "_.ACISIN" "{sat_path}")\n'
         f'(command "_.SAVEAS" "2018" "{dwg_path}")\n'
-        f'(quit)\n'
+        f'(setvar "DBMOD" 0)\n'
+        f'_.QUIT\n'
     )
 
     try:
+        cmd = [
+            accoreconsole_path,
+            "/i", template_dwt,
+            "/nologo",
+            "/nohardware",
+            "/p", "<<AutoCAD Defaults>>",
+        ]
         result = subprocess.run(
-            [accoreconsole_path],
+            cmd,
             input=lisp.encode("cp949", errors="replace"),
             capture_output=True,
-            timeout=120,
+            timeout=300,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
 
         stdout = result.stdout.decode("cp949", errors="replace")
+        stderr = result.stderr.decode("cp949", errors="replace")
 
         if os.path.exists(dwg_path):
             log_queue.put(("ok", f"[완료] {filename}.dwg"))
             return True
         else:
             log_queue.put(("err", f"[실패] {filename}.sat — DWG 파일 미생성"))
-            if stdout.strip():
-                log_queue.put(("err", f"       {stdout.strip()[:200]}"))
+            output = (stdout + stderr).strip()
+            if output:
+                log_queue.put(("err", f"       {output[:300]}"))
             return False
 
     except subprocess.TimeoutExpired:
-        log_queue.put(("err", f"[시간초과] {filename}.sat"))
+        log_queue.put(("err", f"[시간초과] {filename}.sat (300초 초과)"))
         return False
     except Exception as e:
         log_queue.put(("err", f"[오류] {filename}.sat — {e}"))
@@ -164,13 +196,14 @@ class LogWindow:
 # ──────────────────────────────────────────────
 # 변환 스레드
 # ──────────────────────────────────────────────
-def run_conversion(accoreconsole_path, sat_files, log_win):
+def run_conversion(accoreconsole_path, template_dwt, sat_files, log_win):
     log_win.log_queue.put(("info", f"accoreconsole: {accoreconsole_path}"))
+    log_win.log_queue.put(("info", f"template: {template_dwt}"))
     log_win.log_queue.put(("info", f"변환 파일 수: {len(sat_files)}개  |  동시 처리: {MAX_WORKERS}개\n"))
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {
-            executor.submit(convert_single, accoreconsole_path, f, log_win.log_queue): f
+            executor.submit(convert_single, accoreconsole_path, template_dwt, f, log_win.log_queue): f
             for f in sat_files
         }
         for _ in as_completed(futures):
@@ -208,6 +241,16 @@ def main():
         )
         return
 
+    template_dwt = find_template_dwt(accoreconsole_path)
+    if not template_dwt:
+        messagebox.showerror(
+            "템플릿 없음",
+            "acad.dwt 템플릿 파일을 찾을 수 없습니다.\n"
+            "AutoCAD Template 폴더에서 acad.dwt 경로를 확인 후\n"
+            "find_template_dwt() 함수의 candidates 목록에 추가해 주세요."
+        )
+        return
+
     # 로그 창 생성
     log_root = tk.Tk()
     log_win = LogWindow(log_root, total=len(sat_files))
@@ -216,7 +259,7 @@ def main():
     # 변환 스레드 시작
     t = threading.Thread(
         target=run_conversion,
-        args=(accoreconsole_path, sat_files, log_win),
+        args=(accoreconsole_path, template_dwt, sat_files, log_win),
         daemon=True,
     )
     t.start()
