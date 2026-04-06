@@ -209,7 +209,7 @@ def main():
             "설치된 경로를 직접 추가해 주세요."
         )
         return
-
+s
     log_root = tk.Tk()
     log_win = LogWindow(log_root, total=len(sat_files))
     log_root.after(100, log_win.poll_queue)
