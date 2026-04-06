@@ -38,25 +38,27 @@ def convert_single(accoreconsole_path, sat_path, log_queue):
     filename = os.path.splitext(os.path.basename(sat_path))[0]
     folder = os.path.dirname(sat_path)
     dwg_path = os.path.join(folder, filename + ".dwg")
+    scr_path = os.path.join(folder, f"_tmp_{filename}.scr")
 
-    # /i 없이 시작 → accoreconsole이 빈 도면으로 시작
-    # stdin으로 LISP 명령 직접 전달
-    lisp = (
-        f'(command "_.ACISIN" "{sat_path}")\n'
-        f'(command "_.SAVEAS" "2018" "{dwg_path}")\n'
-        f'(setvar "DBMOD" 0)\n'
-        f'_.QUIT\n'
+    # .scr 파일을 cp949로 작성 (한글 AutoCAD 필수)
+    script = (
+        f'_ACISIN "{sat_path}"\n'
+        f'_SAVEAS "2018" "{dwg_path}"\n'
+        f'_QUIT Y\n'
     )
 
     try:
+        with open(scr_path, "w", encoding="cp949", errors="replace") as f:
+            f.write(script)
+
         result = subprocess.run(
             [
                 accoreconsole_path,
+                "/s", scr_path,
                 "/nologo",
                 "/nohardware",
                 "/p", "<<AutoCAD Defaults>>",
             ],
-            input=lisp.encode("cp949", errors="replace"),
             capture_output=True,
             timeout=300,
             creationflags=subprocess.CREATE_NO_WINDOW,
@@ -81,6 +83,9 @@ def convert_single(accoreconsole_path, sat_path, log_queue):
     except Exception as e:
         log_queue.put(("err", f"[오류] {filename}.sat — {e}"))
         return False
+    finally:
+        if os.path.exists(scr_path):
+            os.remove(scr_path)
 
 
 # ──────────────────────────────────────────────
