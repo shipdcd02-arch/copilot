@@ -403,139 +403,6 @@ def run_conversion(accoreconsole_path, sat_files, base_folder, log_win, options)
 
 
 # ──────────────────────────────────────────────
-# 폴더 선택 창 (위치 기억)
-# ──────────────────────────────────────────────
-class FolderBrowserDialog:
-    def __init__(self, parent):
-        self.result  = None
-        self._entries = []
-
-        self.dlg = tk.Toplevel(parent)
-        self.dlg.title("폴더 선택")
-        self.dlg.resizable(True, True)
-        self.dlg.grab_set()
-        set_icon(self.dlg)
-        restore_geometry(self.dlg, "folder_geometry", "520x400")
-        self.dlg.protocol("WM_DELETE_WINDOW", self._cancel)
-
-        # ── 경로 표시줄 ─────────────────────────
-        bar = tk.Frame(self.dlg)
-        bar.pack(fill="x", padx=6, pady=(6, 2))
-
-        # 드라이브 선택
-        drives = [f"{c}:\\" for c in "CDEFGHIJKLMNOPQRSTUVWXYZ"
-                  if os.path.exists(f"{c}:\\")]
-        if not drives:
-            drives = ["C:\\"]
-        self._drive_var = tk.StringVar(value=drives[0])
-        drv_cb = ttk.Combobox(bar, textvariable=self._drive_var,
-                              values=drives, state="readonly", width=5)
-        drv_cb.pack(side="left", padx=(0, 4))
-        drv_cb.bind("<<ComboboxSelected>>",
-                    lambda e: self._navigate(self._drive_var.get()))
-
-        tk.Button(bar, text="↑ 상위", command=self._go_up).pack(side="left", padx=(0, 4))
-
-        self.path_var = tk.StringVar()
-        pe = tk.Entry(bar, textvariable=self.path_var, font=("Consolas", 9))
-        pe.pack(side="left", fill="x", expand=True)
-        pe.bind("<Return>", lambda e: self._navigate(self.path_var.get()))
-
-        # ── 목록 ────────────────────────────────
-        lf = tk.Frame(self.dlg)
-        lf.pack(fill="both", expand=True, padx=6, pady=2)
-        sb = tk.Scrollbar(lf)
-        sb.pack(side="right", fill="y")
-        self.lb = tk.Listbox(lf, yscrollcommand=sb.set, font=("", 9),
-                             selectmode="single", activestyle="none")
-        sb.config(command=self.lb.yview)
-        self.lb.pack(fill="both", expand=True)
-        self.lb.bind("<Double-1>", self._on_double)
-        self.lb.bind("<Return>", lambda e: self._ok())
-
-        # ── 버튼 ────────────────────────────────
-        br = tk.Frame(self.dlg)
-        br.pack(pady=(2, 6))
-        tk.Button(br, text="이 폴더 선택", width=14,
-                  bg="#4caf50", fg="white", font=("", 9, "bold"),
-                  command=self._ok).pack(side="left", padx=4)
-        tk.Button(br, text="취소", width=8,
-                  command=self._cancel).pack(side="left", padx=4)
-
-        # 초기 경로 (마지막 사용 또는 홈)
-        init = reg_load("last_folder") or os.path.expanduser("~")
-        if not os.path.isdir(init):
-            init = os.path.expanduser("~")
-        self._current = init
-        self._navigate(init)
-
-    def _list_dirs(self, path):
-        try:
-            items = []
-            with os.scandir(path) as it:
-                for e in it:
-                    try:
-                        if not e.is_dir(follow_symlinks=False):
-                            continue
-                        # 숨김 폴더 제외
-                        attr = e.stat(follow_symlinks=False).st_file_attributes
-                        if attr & 2:   # FILE_ATTRIBUTE_HIDDEN
-                            continue
-                        items.append(e.name)
-                    except Exception:
-                        continue
-            return sorted(items, key=str.lower)
-        except Exception:
-            return []
-
-    def _navigate(self, path):
-        path = os.path.normpath(path)
-        if not os.path.isdir(path):
-            return
-        self._current = path
-        self.path_var.set(path)
-
-        # 드라이브 콤보 동기화
-        drive = os.path.splitdrive(path)[0] + "\\"
-        self._drive_var.set(drive)
-
-        self.lb.delete(0, "end")
-        self._entries = []
-        for name in self._list_dirs(path):
-            self.lb.insert("end", f"   {name}")
-            self._entries.append(os.path.join(path, name))
-
-    def _on_double(self, _event):
-        sel = self.lb.curselection()
-        if sel:
-            self._navigate(self._entries[sel[0]])
-
-    def _go_up(self):
-        parent = os.path.dirname(self._current)
-        if parent and parent != self._current:
-            self._navigate(parent)
-
-    def _ok(self):
-        sel = self.lb.curselection()
-        if sel:
-            self._current = self._entries[sel[0]]
-        if not self._current:
-            return
-        save_geometry(self.dlg, "folder_geometry")
-        reg_save("last_folder", self._current)
-        self.result = self._current
-        self.dlg.destroy()
-
-    def _cancel(self):
-        save_geometry(self.dlg, "folder_geometry")
-        self.dlg.destroy()
-
-    def show(self):
-        self.dlg.wait_window()
-        return self.result
-
-
-# ──────────────────────────────────────────────
 # 옵션 창
 # ──────────────────────────────────────────────
 class OptionsDialog:
@@ -689,8 +556,12 @@ def main():
         root_hidden.destroy()
         return
 
-    # 3) 폴더 선택 (위치 기억되는 커스텀 다이얼로그)
-    folder = FolderBrowserDialog(root_hidden).show()
+    # 3) 폴더 선택
+    from tkinter import filedialog
+    folder = filedialog.askdirectory(
+        title="SAT 파일이 있는 폴더를 선택하세요",
+        parent=root_hidden,
+    )
     if not folder:
         root_hidden.destroy()
         return
