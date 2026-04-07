@@ -1,228 +1,75 @@
-import os
-import glob
-import subprocess
-import threading
-import tkinter as tk
-from tkinter import filedialog, scrolledtext, messagebox
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import queue
+import qrcode
+import cv2
+import numpy as np
+import time
+import random
+import string
 
-# ──────────────────────────────────────────────
-# accoreconsole.exe 경로 후보 (2018 한글판 우선)
-# ──────────────────────────────────────────────
-ACCORECONSOLE_CANDIDATES = [
-    r"C:\Program Files\Autodesk\AutoCAD 2018\accoreconsole.exe",
-    r"C:\Program Files\Autodesk\AutoCAD 2018 - Korean\accoreconsole.exe",
-    r"C:\Program Files (x86)\Autodesk\AutoCAD 2018\accoreconsole.exe",
-    r"C:\Program Files\Autodesk\AutoCAD 2026\accoreconsole.exe",
-    r"C:\Program Files\Autodesk\AutoCAD 2025\accoreconsole.exe",
-    r"C:\Program Files\Autodesk\AutoCAD 2024\accoreconsole.exe",
-    r"C:\Program Files\Autodesk\AutoCAD 2023\accoreconsole.exe",
-    r"C:\Program Files\Autodesk\AutoCAD 2022\accoreconsole.exe",
-    r"C:\Program Files\Autodesk\AutoCAD 2021\accoreconsole.exe",
-    r"C:\Program Files\Autodesk\AutoCAD 2020\accoreconsole.exe",
-]
+def generate_long_text(length=2000):
+    """
+    테스트를 위한 긴 텍스트 생성 (한글/영문 혼합 가능)
+    실제 사용 시에는 이 함수 대신 보낼 데이터를 넣으세요.
+    """
+    letters = string.ascii_letters + string.digits + " "
+    # 2000자 생성
+    return ''.join(random.choice(letters) for _ in range(length))
 
-# CPU 코어 수 자동 감지 (최대 코어 - 1, 최소 1)
-MAX_WORKERS = max(1, (os.cpu_count() or 2) - 1)
-
-
-def find_accoreconsole():
-    for path in ACCORECONSOLE_CANDIDATES:
-        if os.path.exists(path):
-            return path
-    return None
-
-
-def convert_single(accoreconsole_path, sat_path, log_queue):
-    filename = os.path.splitext(os.path.basename(sat_path))[0]
-    folder = os.path.dirname(sat_path)
-    dwg_path = os.path.join(folder, filename + ".dwg")
-
-    # stdin으로 직접 전달 (scr 파일 불필요)
-    # _SAVEAS: 포맷과 파일명을 별도 줄, 따옴표 없이
-    script = (
-        f'_ACISIN "{sat_path}"\n'
-        f'_SAVEAS\n'
-        f'2018\n'
-        f'"{dwg_path}"\n'
-        f'_QUIT Y\n'
-        f'\n'
-    )
-
-    try:
-        result = subprocess.run(
-            [
-                accoreconsole_path,
-                "/nologo",
-                "/nohardware",
-                "/p", "<<AutoCAD Defaults>>",
-            ],
-            input=script.encode("cp949", errors="replace"),
-            capture_output=True,
-            timeout=300,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-
-        stdout = result.stdout.decode("cp949", errors="replace")
-        stderr = result.stderr.decode("cp949", errors="replace")
-
-        if os.path.exists(dwg_path):
-            log_queue.put(("ok", f"[완료] {filename}.dwg"))
-            return True
-        else:
-            log_queue.put(("err", f"[실패] {filename}.sat — DWG 파일 미생성"))
-            output = (stdout + stderr).strip()
-            if output:
-                log_queue.put(("err", f"       {output[:300]}"))
-            return False
-
-    except subprocess.TimeoutExpired:
-        log_queue.put(("err", f"[시간초과] {filename}.sat (300초 초과)"))
-        return False
-    except Exception as e:
-        log_queue.put(("err", f"[오류] {filename}.sat — {e}"))
-        return False
-
-
-# ──────────────────────────────────────────────
-# 로그 창
-# ──────────────────────────────────────────────
-class LogWindow:
-    def __init__(self, root, total):
-        self.root = root
-        self.total = total
-        self.done = 0
-        self.ok = 0
-        self.fail = 0
-        self.log_queue = queue.Queue()
-
-        root.title("SAT → DWG 변환 중...")
-        root.geometry("520x320")
-        root.resizable(True, True)
-        root.protocol("WM_DELETE_WINDOW", lambda: None)  # X 버튼 비활성화
-
-        self.status_var = tk.StringVar(value=f"변환 중... (0 / {total})")
-        tk.Label(root, textvariable=self.status_var, anchor="w",
-                 font=("Consolas", 10, "bold")).pack(fill="x", padx=8, pady=(8, 0))
-
-        self.canvas = tk.Canvas(root, height=12, bg="#e0e0e0", highlightthickness=0)
-        self.canvas.pack(fill="x", padx=8, pady=4)
-        self.bar = self.canvas.create_rectangle(0, 0, 0, 12, fill="#4caf50", width=0)
-
-        self.text = scrolledtext.ScrolledText(
-            root, height=12, font=("Consolas", 9),
-            state="disabled", bg="#1e1e1e", fg="#d4d4d4",
-            insertbackground="white"
-        )
-        self.text.pack(fill="both", expand=True, padx=8, pady=4)
-        self.text.tag_config("ok",   foreground="#6adc6a")
-        self.text.tag_config("err",  foreground="#f97070")
-        self.text.tag_config("info", foreground="#9cdcfe")
-
-        self.close_btn = tk.Button(
-            root, text="닫기", state="disabled", width=10,
-            command=root.destroy
-        )
-        self.close_btn.pack(pady=(0, 8))
-
-    def append(self, tag, msg):
-        self.text.configure(state="normal")
-        self.text.insert("end", msg + "\n", tag)
-        self.text.see("end")
-        self.text.configure(state="disabled")
-
-    def update_progress(self):
-        self.done += 1
-        pct = self.done / self.total
-        self.canvas.update_idletasks()
-        w = self.canvas.winfo_width()
-        self.canvas.coords(self.bar, 0, 0, int(w * pct), 12)
-        self.status_var.set(f"변환 중... ({self.done} / {self.total})")
-
-    def finish(self):
-        self.status_var.set(
-            f"완료!  성공 {self.ok}개  /  실패 {self.fail}개  /  전체 {self.total}개"
-        )
-        self.root.title("SAT → DWG 변환 완료")
-        self.close_btn.configure(state="normal")
-        self.root.protocol("WM_DELETE_WINDOW", self.root.destroy)
-
-    def poll_queue(self):
-        try:
-            while True:
-                tag, msg = self.log_queue.get_nowait()
-                self.append(tag, msg)
-                if tag == "ok":
-                    self.ok += 1
-                elif tag == "err":
-                    self.fail += 1
-                if tag in ("ok", "err"):
-                    self.update_progress()
-        except queue.Empty:
-            pass
-        self.root.after(100, self.poll_queue)
-
-
-# ──────────────────────────────────────────────
-# 변환 스레드
-# ──────────────────────────────────────────────
-def run_conversion(accoreconsole_path, sat_files, log_win):
-    log_win.log_queue.put(("info", f"accoreconsole : {accoreconsole_path}"))
-    log_win.log_queue.put(("info", f"동시 처리 코어 : {MAX_WORKERS}  /  전체 파일 : {len(sat_files)}개\n"))
-
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {
-            executor.submit(convert_single, accoreconsole_path, f, log_win.log_queue): f
-            for f in sat_files
-        }
-        for _ in as_completed(futures):
-            pass
-
-    log_win.root.after(0, log_win.finish)
-
-
-# ──────────────────────────────────────────────
-# 메인
-# ──────────────────────────────────────────────
 def main():
-    root_hidden = tk.Tk()
-    root_hidden.withdraw()
+    # 1. 기본 설정
+    window_name = "QR Auto Sequence"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    display_size = (800, 800)  # 화면에 표시될 고정 크기 (픽셀)
+    
+    print(f"시퀀스 시작... 창 크기: {display_size}")
+    print("종료하려면 이미지 창을 클릭한 후 'q'를 누르세요.")
 
-    folder = filedialog.askdirectory(title="SAT 파일이 있는 폴더를 선택하세요")
-    root_hidden.destroy()
+    count = 1
+    try:
+        while True:
+            # 2. 데이터 준비 (여기에서 실제 전송할 데이터를 교체하세요)
+            raw_data = f"No.{count} | " + generate_long_text(2000)
+            
+            # 3. QR 코드 객체 생성
+            # version=None으로 두면 데이터 양에 따라 QR 크기가 자동 조절됩니다.
+            qr = qrcode.QRCode(
+                version=None,
+                error_correction=qrcode.constants.ERROR_CORRECT_L, # 점 개수 최소화 (인식률 향상)
+                box_size=10,
+                border=2,
+            )
+            qr.add_data(raw_data)
+            qr.make(fit=True)
 
-    if not folder:
-        return
+            # 4. QR 이미지를 PIL에서 넘파이(OpenCV) 배열로 변환
+            img_qr = qr.make_image(fill_color="black", back_color="white").convert('RGB')
+            frame = cv2.cvtColor(np.array(img_qr), cv2.COLOR_RGB2BGR)
 
-    sat_files = glob.glob(os.path.join(folder, "*.sat"))
-    if not sat_files:
-        messagebox.showwarning("파일 없음", f"선택한 폴더에 SAT 파일이 없습니다.\n{folder}")
-        return
+            # 5. 🔥 크기 강제 고정 및 선명도 최적화
+            # INTER_NEAREST를 써야 픽셀이 뭉개지지 않아 휴대폰이 잘 읽습니다.
+            frame_resized = cv2.resize(frame, display_size, interpolation=cv2.INTER_NEAREST)
 
-    accoreconsole_path = find_accoreconsole()
-    if not accoreconsole_path:
-        messagebox.showerror(
-            "accoreconsole 없음",
-            "accoreconsole.exe를 찾을 수 없습니다.\n"
-            "sat_to_dwg.py 상단의 ACCORECONSOLE_CANDIDATES 목록에\n"
-            "설치된 경로를 직접 추가해 주세요."
-        )
-        return
+            # 6. 화면 출력 및 정보 표시
+            # 현재 몇 번째 QR인지 상단에 표시 (선택 사항)
+            cv2.putText(frame_resized, f"QR Sequence: {count}", (20, 40), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            
+            cv2.imshow(window_name, frame_resized)
 
-    log_root = tk.Tk()
-    log_win = LogWindow(log_root, total=len(sat_files))
-    log_root.after(100, log_win.poll_queue)
+            # 데이터 출력(콘솔)
+            print(f"[{count}] 2000자 QR 발행 중...")
 
-    t = threading.Thread(
-        target=run_conversion,
-        args=(accoreconsole_path, sat_files, log_win),
-        daemon=True,
-    )
-    t.start()
+            # 7. 대기 시간 조절 (500ms = 0.5초)
+            # 사용 중인 앱의 인식 속도에 따라 500~1000 사이로 조절하세요.
+            if cv2.waitKey(500) & 0xFF == ord('q'):
+                break
+            
+            count += 1
 
-    log_root.mainloop()
-
+    except Exception as e:
+        print(f"오류 발생: {e}")
+    finally:
+        cv2.destroyAllWindows()
+        print("프로그램이 종료되었습니다.")
 
 if __name__ == "__main__":
     main()
