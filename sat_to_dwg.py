@@ -279,27 +279,43 @@ class LogWindow:
         root.resizable(True, True)
         root.protocol("WM_DELETE_WINDOW", lambda: None)
 
-        # ── 상태 영역 (2행) ──────────────────────
+        # ── 상태 영역 ────────────────────────────
         stat_frame = tk.Frame(root)
-        stat_frame.pack(fill="x", padx=8, pady=(6, 0))
+        stat_frame.pack(fill="x", padx=10, pady=(8, 2))
 
-        # 1행: 진행 상태 (큰 글씨)
-        self._main_var = tk.StringVar(value=f"변환 중 ...    ( 0 / {total} )")
-        tk.Label(stat_frame, textvariable=self._main_var, anchor="w",
-                 font=("Consolas", 11, "bold")).pack(fill="x")
+        # 1행: 아이콘 + 상태 텍스트  /  오른쪽: n / total
+        top_row = tk.Frame(stat_frame)
+        top_row.pack(fill="x")
 
-        # 2행: 색상 카운터
+        self._icon_lbl = tk.Label(top_row, text="⏳", font=("Segoe UI Emoji", 13))
+        self._icon_lbl.pack(side="left", padx=(0, 6))
+
+        self._status_var = tk.StringVar(value="변환 중...")
+        tk.Label(top_row, textvariable=self._status_var,
+                 font=("맑은 고딕", 11, "bold"), anchor="w").pack(side="left")
+
+        self._progress_var = tk.StringVar(value=f"0 / {total}")
+        tk.Label(top_row, textvariable=self._progress_var,
+                 font=("Consolas", 10), fg="#888888", anchor="e").pack(side="right")
+
+        # 2행: 카운터 칸
         cnt_row = tk.Frame(stat_frame)
-        cnt_row.pack(anchor="w", pady=(1, 0))
-        self._ok_var   = tk.StringVar(value="완료  0")
-        self._fail_var = tk.StringVar(value="실패  0")
-        self._skip_var = tk.StringVar(value="건너뜀  0")
-        tk.Label(cnt_row, textvariable=self._ok_var,
-                 fg="#6adc6a", font=("Consolas", 9, "bold")).pack(side="left", padx=(0, 18))
-        tk.Label(cnt_row, textvariable=self._fail_var,
-                 fg="#f97070", font=("Consolas", 9, "bold")).pack(side="left", padx=(0, 18))
-        tk.Label(cnt_row, textvariable=self._skip_var,
-                 fg="#c8b400", font=("Consolas", 9, "bold")).pack(side="left")
+        cnt_row.pack(anchor="w", pady=(5, 0))
+
+        def _counter_cell(parent, icon, label, color):
+            f = tk.Frame(parent, relief="groove", bd=1, padx=8, pady=3)
+            f.pack(side="left", padx=(0, 8))
+            tk.Label(f, text=icon, font=("Segoe UI Emoji", 10)).pack(side="left")
+            tk.Label(f, text=f" {label}", font=("맑은 고딕", 8),
+                     fg="#666666").pack(side="left")
+            var = tk.StringVar(value="0")
+            tk.Label(f, textvariable=var, font=("Consolas", 11, "bold"),
+                     fg=color, width=4, anchor="e").pack(side="left")
+            return var
+
+        self._ok_var   = _counter_cell(cnt_row, "✔", "완료",   "#4caf50")
+        self._fail_var = _counter_cell(cnt_row, "✖", "실패",   "#e53935")
+        self._skip_var = _counter_cell(cnt_row, "⏭", "건너뜀", "#f9a825")
 
         # 프로그레스바
         self.canvas = tk.Canvas(root, height=13, bg="#dde3ed", highlightthickness=0)
@@ -341,16 +357,25 @@ class LogWindow:
         self.canvas.update_idletasks()
         w = self.canvas.winfo_width()
         self.canvas.coords(self.bar, 0, 0, int(w * pct), 13)
-        self._main_var.set(f"변환 중 ...    ( {self.done} / {self.total} )")
-        self._ok_var.set(f"완료  {self.ok}")
-        self._fail_var.set(f"실패  {self.fail}")
-        self._skip_var.set(f"건너뜀  {self.skip}")
+        self._progress_var.set(f"{self.done} / {self.total}")
+        self._ok_var.set(str(self.ok))
+        self._fail_var.set(str(self.fail))
+        self._skip_var.set(str(self.skip))
 
     def finish(self):
-        self._main_var.set(
-            f"완료 !    성공  {self.ok} 개    실패  {self.fail} 개"
-            f"    건너뜀  {self.skip} 개    전체  {self.total} 개"
-        )
+        if self.fail > 0:
+            self._icon_lbl.config(text="⚠️")
+            self._status_var.set("변환 완료 (일부 실패)")
+        elif self.ok == 0:
+            self._icon_lbl.config(text="⏭")
+            self._status_var.set("모두 건너뜀")
+        else:
+            self._icon_lbl.config(text="✅")
+            self._status_var.set("변환 완료")
+        self._progress_var.set(f"{self.total} / {self.total}")
+        self._ok_var.set(str(self.ok))
+        self._fail_var.set(str(self.fail))
+        self._skip_var.set(str(self.skip))
         self.root.title("SAT → DWG 변환 완료")
         self.close_btn.configure(state="normal")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -579,6 +604,9 @@ def main():
     # 5) 로그 창 + 변환 시작
     log_root = tk.Tk()
     log_win  = LogWindow(log_root, total=len(sat_files), options=options, folder=folder)
+    log_root.lift()
+    log_root.attributes("-topmost", True)
+    log_root.after(200, lambda: log_root.attributes("-topmost", False))
     log_root.after(100, log_win.poll_queue)
 
     threading.Thread(
