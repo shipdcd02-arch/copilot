@@ -17,16 +17,45 @@ _WS_EX_TOOLWINDOW = 0x00000080
 _SWP_FLAGS = 0x0001 | 0x0002 | 0x0004 | 0x0020  # NOSIZE|NOMOVE|NOZORDER|FRAMECHANGED
 _GA_ROOT = 2
 
-def hide_titlebar(window):
+def hide_titlebar(window, show_in_taskbar=True):
+    """제목표시줄 제거. show_in_taskbar=False 이면 작업표시줄에도 숨김."""
     window.update_idletasks()
     hwnd = _u32.GetAncestor(window.winfo_id(), _GA_ROOT)
     style = _u32.GetWindowLongW(hwnd, _GWL_STYLE)
     style &= ~(_WS_CAPTION | _WS_THICKFRAME)
     _u32.SetWindowLongW(hwnd, _GWL_STYLE, style)
     ex = _u32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
-    ex = (ex & ~_WS_EX_TOOLWINDOW) | _WS_EX_APPWINDOW
+    if show_in_taskbar:
+        ex = (ex & ~_WS_EX_TOOLWINDOW) | _WS_EX_APPWINDOW
+    else:
+        ex = (ex & ~_WS_EX_APPWINDOW) | _WS_EX_TOOLWINDOW
     _u32.SetWindowLongW(hwnd, _GWL_EXSTYLE, ex)
     _u32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, _SWP_FLAGS)
+
+
+def make_app_icon():
+    """작업표시줄·창 아이콘용 이미지 생성 (QR 패턴 모양)"""
+    from PIL import ImageDraw
+    sz, c, bg = 64, "#2D3748", "#FFFFFF"
+    img = Image.new("RGB", (sz, sz), bg)
+    d = ImageDraw.Draw(img)
+    # 테두리
+    d.rectangle([0, 0, sz-1, sz-1], fill="#4F86F0")
+    # 흰 배경
+    d.rectangle([4, 4, sz-5, sz-5], fill=bg)
+    # 좌상단 파인더
+    d.rectangle([7, 7, 24, 24], outline=c, width=2)
+    d.rectangle([11, 11, 20, 20], fill=c)
+    # 우상단 파인더
+    d.rectangle([39, 7, 56, 24], outline=c, width=2)
+    d.rectangle([43, 11, 52, 20], fill=c)
+    # 좌하단 파인더
+    d.rectangle([7, 39, 24, 56], outline=c, width=2)
+    d.rectangle([11, 43, 20, 52], fill=c)
+    # 데이터 도트
+    for x, y in [(29,7),(34,7),(29,12),(34,17),(7,29),(12,29),(17,34),(29,29),(34,34),(29,39),(39,34),(44,29),(49,34),(44,39),(49,44),(39,49),(44,49)]:
+        d.rectangle([x, y, x+3, y+3], fill=c)
+    return img
 
 MAX_BYTES = 2000
 REG_KEY   = r"Software\SHI AI\QRGenerator"
@@ -246,7 +275,7 @@ class QRPlayerWindow:
         self._show_current()
         self.win.update_idletasks()
         self._place_relative_to_parent()
-        self.win.after(50, lambda: hide_titlebar(self.win))
+        self.win.after(50, lambda: hide_titlebar(self.win, show_in_taskbar=False))
 
     # ── 위치 지정 ────────────────────────────────────────
 
@@ -385,7 +414,11 @@ class QRApp:
     def __init__(self, root):
         self.root       = root
         self.player_win = None
+        self.root.title("QR 코드 생성기")
         self.root.configure(bg=BG)
+        # 아이콘 설정
+        self._icon = ImageTk.PhotoImage(make_app_icon())
+        self.root.iconphoto(True, self._icon)
 
         outer = tk.Frame(root, bg=BG, padx=20, pady=18)
         outer.pack()
