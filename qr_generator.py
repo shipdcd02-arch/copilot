@@ -2,8 +2,31 @@ import tkinter as tk
 from tkinter import messagebox
 import time
 import winreg
+import ctypes
 import qrcode
 from PIL import Image, ImageTk
+
+# ── Windows API로 제목표시줄만 제거 (작업표시줄은 유지) ──
+_u32 = ctypes.windll.user32
+_GWL_STYLE       = -16
+_GWL_EXSTYLE     = -20
+_WS_CAPTION      = 0x00C00000
+_WS_THICKFRAME   = 0x00040000
+_WS_EX_APPWINDOW  = 0x00040000
+_WS_EX_TOOLWINDOW = 0x00000080
+_SWP_FLAGS = 0x0001 | 0x0002 | 0x0004 | 0x0020  # NOSIZE|NOMOVE|NOZORDER|FRAMECHANGED
+_GA_ROOT = 2
+
+def hide_titlebar(window):
+    window.update_idletasks()
+    hwnd = _u32.GetAncestor(window.winfo_id(), _GA_ROOT)
+    style = _u32.GetWindowLongW(hwnd, _GWL_STYLE)
+    style &= ~(_WS_CAPTION | _WS_THICKFRAME)
+    _u32.SetWindowLongW(hwnd, _GWL_STYLE, style)
+    ex = _u32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
+    ex = (ex & ~_WS_EX_TOOLWINDOW) | _WS_EX_APPWINDOW
+    _u32.SetWindowLongW(hwnd, _GWL_EXSTYLE, ex)
+    _u32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, _SWP_FLAGS)
 
 MAX_BYTES = 2000
 REG_KEY   = r"Software\SHI AI\QRGenerator"
@@ -127,13 +150,12 @@ class QRPlayerWindow:
         self.paused_elapsed_ms   = 0.0
 
         self.win = tk.Toplevel(parent_root)
-        self.win.overrideredirect(True)   # 제목표시줄 제거
         self.win.configure(bg=BG)
 
         outer = tk.Frame(self.win, bg=BG, padx=20, pady=18)
         outer.pack()
 
-        # ── 타이틀 행 (드래그 이동 + 닫기 버튼) ────────
+        # ── 타이틀 행 (드래그 이동) ──────────────────────
         title_row = tk.Frame(outer, bg=BG)
         title_row.pack(fill=tk.X, pady=(0, 12))
         title_lbl = tk.Label(title_row, text="QR 재생",
@@ -141,9 +163,6 @@ class QRPlayerWindow:
         title_lbl.pack(side=tk.LEFT)
         tk.Label(title_row, text=f"총 {len(qr_images)}장",
                  bg=BG, fg=TEXT_MUTED, font=(FONT, 10)).pack(side=tk.LEFT, padx=(8, 0))
-        styled_btn(title_row, "✕  닫기", self._on_close,
-                   DANGER, DANGER_HOV).pack(side=tk.RIGHT)
-        # 타이틀 라벨 드래그로 창 이동
         make_draggable(title_lbl, self.win)
         make_draggable(title_row, self.win)
 
@@ -178,7 +197,7 @@ class QRPlayerWindow:
         inner_ctrl = tk.Frame(ctrl_card, bg=CARD, padx=12, pady=12)
         inner_ctrl.pack(fill=tk.X)
 
-        # 버튼 3개 – 전체 너비 채움
+        # 버튼 4개 – 시작/일시정지/처음으로(넓게) + 닫기(좁게)
         ctrl_btn_row = tk.Frame(inner_ctrl, bg=CARD)
         ctrl_btn_row.pack(fill=tk.X)
 
@@ -187,19 +206,25 @@ class QRPlayerWindow:
             ctrl_btn_row, "▶  시작", self.start_animation,
             CTRL, CTRL_HOV, state=tk.NORMAL if has_multi else tk.DISABLED
         )
-        self.btn_start.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+        self.btn_start.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
 
         self.btn_pause = styled_btn(
             ctrl_btn_row, "⏸  일시정지", self.pause_animation,
             NEUTRAL, NEUTRAL_HOV, state=tk.DISABLED
         )
-        self.btn_pause.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+        self.btn_pause.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
 
         self.btn_reset = styled_btn(
             ctrl_btn_row, "↩  처음으로", self.reset_animation,
             NEUTRAL, NEUTRAL_HOV, state=tk.NORMAL if has_multi else tk.DISABLED
         )
-        self.btn_reset.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.btn_reset.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
+
+        # 닫기 – 고정 너비로 작게
+        styled_btn(
+            ctrl_btn_row, "✕", self._on_close,
+            DANGER, DANGER_HOV
+        ).pack(side=tk.LEFT, ipadx=6)
 
         # 속도 조절
         speed_row = tk.Frame(inner_ctrl, bg=CARD)
@@ -217,10 +242,11 @@ class QRPlayerWindow:
         ).pack(side=tk.LEFT, padx=6)
         tk.Label(speed_row, text="초", bg=CARD, fg=TEXT_MUTED, font=(FONT, 9)).pack(side=tk.LEFT)
 
-        # 첫 QR 표시 후 창 위치 지정
+        # 첫 QR 표시 후 창 위치 지정, 제목표시줄 제거
         self._show_current()
         self.win.update_idletasks()
         self._place_relative_to_parent()
+        self.win.after(50, lambda: hide_titlebar(self.win))
 
     # ── 위치 지정 ────────────────────────────────────────
 
@@ -359,7 +385,6 @@ class QRApp:
     def __init__(self, root):
         self.root       = root
         self.player_win = None
-        self.root.overrideredirect(True)   # 제목표시줄 제거
         self.root.configure(bg=BG)
 
         outer = tk.Frame(root, bg=BG, padx=20, pady=18)
@@ -418,11 +443,12 @@ class QRApp:
         styled_btn(btn_row, "닫기", self._on_close,
                    DANGER, DANGER_HOV).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        # ── 저장된 위치 복원 ─────────────────────────────
+        # ── 저장된 위치 복원 + 제목표시줄 제거 ──────────
         pos = reg_load_pos()
         if pos:
             self.root.update_idletasks()
             self.root.geometry(f"+{pos[0]}+{pos[1]}")
+        self.root.after(50, lambda: hide_titlebar(self.root))
 
     # ── 이벤트 ────────────────────────────────────────────
 
