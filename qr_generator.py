@@ -100,6 +100,17 @@ def restore_btn_color(btn):
     btn.config(bg=btn._base_bg)
 
 
+def make_draggable(widget, window):
+    """위젯을 드래그해 window를 이동할 수 있도록 바인딩"""
+    def on_press(e):
+        widget._drag_x = e.x_root - window.winfo_x()
+        widget._drag_y = e.y_root - window.winfo_y()
+    def on_drag(e):
+        window.geometry(f"+{e.x_root - widget._drag_x}+{e.y_root - widget._drag_y}")
+    widget.bind("<ButtonPress-1>", on_press)
+    widget.bind("<B1-Motion>", on_drag)
+
+
 # ════════════════════════════════════════════════════════
 #  QR 재생 창
 # ════════════════════════════════════════════════════════
@@ -118,20 +129,23 @@ class QRPlayerWindow:
         self.win = tk.Toplevel(parent_root)
         self.win.overrideredirect(True)   # 제목표시줄 제거
         self.win.configure(bg=BG)
-        self.win.transient(parent_root)
 
         outer = tk.Frame(self.win, bg=BG, padx=20, pady=18)
         outer.pack()
 
-        # ── 타이틀 행 (닫기 버튼 포함) ──────────────────
+        # ── 타이틀 행 (드래그 이동 + 닫기 버튼) ────────
         title_row = tk.Frame(outer, bg=BG)
         title_row.pack(fill=tk.X, pady=(0, 12))
-        tk.Label(title_row, text="QR 재생",
-                 bg=BG, fg=TEXT, font=(FONT, 13, "bold")).pack(side=tk.LEFT)
+        title_lbl = tk.Label(title_row, text="QR 재생",
+                             bg=BG, fg=TEXT, font=(FONT, 13, "bold"))
+        title_lbl.pack(side=tk.LEFT)
         tk.Label(title_row, text=f"총 {len(qr_images)}장",
                  bg=BG, fg=TEXT_MUTED, font=(FONT, 10)).pack(side=tk.LEFT, padx=(8, 0))
         styled_btn(title_row, "✕  닫기", self._on_close,
-                   DANGER, DANGER_HOV).pack(side=tk.RIGHT, fill=tk.X, expand=False)
+                   DANGER, DANGER_HOV).pack(side=tk.RIGHT)
+        # 타이틀 라벨 드래그로 창 이동
+        make_draggable(title_lbl, self.win)
+        make_draggable(title_row, self.win)
 
         # ── QR 표시 카드 ─────────────────────────────────
         qr_card = tk.Frame(outer, bg=CARD,
@@ -345,18 +359,20 @@ class QRApp:
     def __init__(self, root):
         self.root       = root
         self.player_win = None
-        self.root.title("QR 코드 생성기")
-        self.root.resizable(False, False)
+        self.root.overrideredirect(True)   # 제목표시줄 제거
         self.root.configure(bg=BG)
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         outer = tk.Frame(root, bg=BG, padx=20, pady=18)
         outer.pack()
 
-        # ── 타이틀 ───────────────────────────────────────
-        tk.Label(outer, text="QR 코드 생성기",
-                 bg=BG, fg=TEXT, font=(FONT, 14, "bold")
-                 ).pack(anchor='w', pady=(0, 14))
+        # ── 타이틀 행 (드래그 이동) ──────────────────────
+        title_row = tk.Frame(outer, bg=BG)
+        title_row.pack(fill=tk.X, pady=(0, 14))
+        title_lbl = tk.Label(title_row, text="QR 코드 생성기",
+                             bg=BG, fg=TEXT, font=(FONT, 14, "bold"))
+        title_lbl.pack(anchor='w')
+        make_draggable(title_lbl, self.root)
+        make_draggable(title_row, self.root)
 
         # ── 입력 카드 ────────────────────────────────────
         input_card = tk.Frame(outer, bg=CARD,
