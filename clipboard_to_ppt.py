@@ -24,8 +24,16 @@ def main():
         print("클립보드가 비어있습니다.")
         sys.exit(1)
 
-    # 2. 임시 PPT 파일 생성 (delete=False → 경로를 Script 2에 전달하기 위해)
-    tmp = tempfile.NamedTemporaryFile(suffix=".pptx", delete=False)
+    # 2. 임시 PPT 파일 생성 (한글 경로 방지 → ASCII 경로 사용)
+    temp_dir = tempfile.gettempdir()
+    try:
+        temp_dir.encode("ascii")
+    except UnicodeEncodeError:
+        # 기본 temp 폴더에 한글이 있으면 C:\Temp 사용
+        temp_dir = "C:\\Temp"
+        os.makedirs(temp_dir, exist_ok=True)
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".pptx", delete=False, dir=temp_dir)
     tmp_path = tmp.name
     tmp.close()
 
@@ -63,13 +71,14 @@ def main():
         sys.exit(1)
 
     # 5. ppt_to_clipboard.exe에 임시 파일 경로 전달 (비동기 실행)
-    #    Windows에서 --noconsole exe 호출 시 핸들 문제 방지
+    #    한글 경로 + --noconsole exe 호환을 위해 shell=True + 큰따옴표 처리
+    cmd = f'"{exe_path}" "{tmp_path}"'
     subprocess.Popen(
-        [exe_path, tmp_path],
+        cmd,
+        shell=True,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        creationflags=subprocess.CREATE_NO_WINDOW,
     )
 
 
