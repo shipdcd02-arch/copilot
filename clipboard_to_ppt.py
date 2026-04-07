@@ -63,7 +63,14 @@ def main():
         sys.exit(1)
 
     # 5. ppt_to_clipboard.exe에 임시 파일 경로 전달 (비동기 실행)
-    subprocess.Popen([exe_path, tmp_path])
+    #    Windows에서 --noconsole exe 호출 시 핸들 문제 방지
+    subprocess.Popen(
+        [exe_path, tmp_path],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
 
 
 if __name__ == "__main__":
