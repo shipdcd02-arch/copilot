@@ -1,11 +1,7 @@
-import os
-import sys
-import uuid
-
-ALLOWED_USER = "yoonk"
-ALLOWED_MACHINE_ID = 123456789012345  # print(uuid.getnode()) 로 확인
-
-if os.getlogin() != ALLOWED_USER or uuid.getnode() != ALLOWED_MACHINE_ID:
-    print("접근 권한이 없습니다.")
-    sys.exit(1)
-python -c "import uuid; print(uuid.getnode())"
+subprocess.Popen(
+    [exe_path, tmp_path],
+    stdin=subprocess.DEVNULL,       # 없는 핸들 대신 /dev/null 연결
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    creationflags=subprocess.CREATE_NO_WINDOW,  # 콘솔 창 없이 실행
+)
