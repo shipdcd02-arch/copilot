@@ -93,7 +93,7 @@ def build_script(sat_path, dwg_path, options):
 
     # 3) 가져온 객체를 해당 레이어로 이동
     if use_layer:
-        lines += ["_CHPROP", "_all", "", "LA", layer_name, "", ""]
+        lines += ["_CHPROP", "_all", "", "LA", layer_name, ""]
 
     # 4) 스케일 적용
     if scale_factor != 1:
