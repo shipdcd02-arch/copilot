@@ -1,10 +1,12 @@
 import tkinter as tk
 from tkinter import messagebox
 import time
+import winreg
 import qrcode
 from PIL import Image, ImageTk
 
 MAX_BYTES = 2000
+REG_KEY   = r"Software\SHI AI\QRGenerator"
 
 # ── 색상 팔레트 ──────────────────────────────────────────
 BG          = "#F0F4F8"
@@ -30,6 +32,31 @@ except AttributeError:
     RESAMPLE = Image.LANCZOS
 
 
+# ── 레지스트리 유틸 ──────────────────────────────────────
+
+def reg_save_pos(x, y):
+    try:
+        key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, REG_KEY)
+        winreg.SetValueEx(key, "x", 0, winreg.REG_SZ, str(x))
+        winreg.SetValueEx(key, "y", 0, winreg.REG_SZ, str(y))
+        winreg.CloseKey(key)
+    except Exception:
+        pass
+
+
+def reg_load_pos():
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_KEY)
+        x = int(winreg.QueryValueEx(key, "x")[0])
+        y = int(winreg.QueryValueEx(key, "y")[0])
+        winreg.CloseKey(key)
+        return x, y
+    except Exception:
+        return None
+
+
+# ── 텍스트 분할 ──────────────────────────────────────────
+
 def split_text_by_newlines(text, max_bytes=MAX_BYTES):
     lines = text.split('\n')
     chunks, current_lines, current_bytes = [], [], 0
@@ -46,13 +73,15 @@ def split_text_by_newlines(text, max_bytes=MAX_BYTES):
     return chunks
 
 
-def styled_btn(parent, text, command, bg, hover, width=9, state=tk.NORMAL):
+# ── 공통 버튼 팩토리 ────────────────────────────────────
+
+def styled_btn(parent, text, command, bg, hover, state=tk.NORMAL):
     btn = tk.Button(
         parent, text=text, command=command,
         bg=bg, fg=CARD, activebackground=hover, activeforeground=CARD,
         relief=tk.FLAT, bd=0, cursor="hand2",
-        font=(FONT, 10, "bold"), width=width,
-        padx=6, pady=6, state=state,
+        font=(FONT, 10, "bold"),
+        padx=8, pady=8, state=state,
         disabledforeground="#AAAAAA"
     )
     def on_enter(e):
@@ -64,7 +93,6 @@ def styled_btn(parent, text, command, bg, hover, width=9, state=tk.NORMAL):
     btn.bind("<Enter>", on_enter)
     btn.bind("<Leave>", on_leave)
     btn._base_bg = bg
-    btn._hover_bg = hover
     return btn
 
 
@@ -73,58 +101,55 @@ def restore_btn_color(btn):
 
 
 # ════════════════════════════════════════════════════════
-#  QR 재생 창 (별도 Toplevel)
+#  QR 재생 창
 # ════════════════════════════════════════════════════════
 
 class QRPlayerWindow:
-    def __init__(self, parent, qr_images, speed_var):
-        self.parent = parent
-        self.qr_images = qr_images
-        self.speed_var = speed_var          # 메인 창의 speed_var 공유
-        self.current_qr_index = 0
-        self.animation_job = None
-        self.is_playing = False
+    def __init__(self, parent_root, qr_images):
+        self.parent_root = parent_root
+        self.qr_images   = qr_images
+        self.current_qr_index    = 0
+        self.animation_job       = None
+        self.is_playing          = False
+        self.is_paused           = False
         self.progress_start_time = 0.0
+        self.paused_elapsed_ms   = 0.0
 
-        self.win = tk.Toplevel(parent)
-        self.win.title("QR 재생")
-        self.win.resizable(False, False)
+        self.win = tk.Toplevel(parent_root)
+        self.win.overrideredirect(True)   # 제목표시줄 제거
         self.win.configure(bg=BG)
-        self.win.transient(parent)
-        self.win.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.win.transient(parent_root)
 
         outer = tk.Frame(self.win, bg=BG, padx=20, pady=18)
         outer.pack()
 
-        # ── 타이틀 행 ────────────────────────────────────
+        # ── 타이틀 행 (닫기 버튼 포함) ──────────────────
         title_row = tk.Frame(outer, bg=BG)
-        title_row.pack(fill=tk.X, pady=(0, 14))
+        title_row.pack(fill=tk.X, pady=(0, 12))
         tk.Label(title_row, text="QR 재생",
                  bg=BG, fg=TEXT, font=(FONT, 13, "bold")).pack(side=tk.LEFT)
-        self.total_label = tk.Label(
-            title_row,
-            text=f"총 {len(qr_images)}장",
-            bg=BG, fg=TEXT_MUTED, font=(FONT, 10)
-        )
-        self.total_label.pack(side=tk.RIGHT, padx=(0, 2))
+        tk.Label(title_row, text=f"총 {len(qr_images)}장",
+                 bg=BG, fg=TEXT_MUTED, font=(FONT, 10)).pack(side=tk.LEFT, padx=(8, 0))
+        styled_btn(title_row, "✕  닫기", self._on_close,
+                   DANGER, DANGER_HOV).pack(side=tk.RIGHT, fill=tk.X, expand=False)
 
         # ── QR 표시 카드 ─────────────────────────────────
         qr_card = tk.Frame(outer, bg=CARD,
                            highlightbackground=BORDER, highlightthickness=1)
-        qr_card.pack(pady=(0, 10))
+        qr_card.pack(fill=tk.X, pady=(0, 10))
 
-        self.qr_label = tk.Label(qr_card, bg=CARD, width=360, height=360)
-        self.qr_label.pack(padx=16, pady=(14, 6))
+        self.qr_label = tk.Label(qr_card, bg=CARD, width=380, height=380)
+        self.qr_label.pack(padx=14, pady=(14, 6))
 
         self.page_label = tk.Label(qr_card, text="",
                                    bg=CARD, fg=TEXT_MUTED, font=(FONT, 11))
         self.page_label.pack(pady=(0, 8))
 
         # 프로그레스 바
-        progress_frame = tk.Frame(qr_card, bg=CARD, padx=16)
-        progress_frame.pack(fill=tk.X, pady=(0, 14))
+        pg_frame = tk.Frame(qr_card, bg=CARD, padx=14)
+        pg_frame.pack(fill=tk.X, pady=(0, 14))
         self.progress_canvas = tk.Canvas(
-            progress_frame, height=8, bg=PROGRESS_BG,
+            pg_frame, height=8, bg=PROGRESS_BG,
             highlightthickness=0, bd=0
         )
         self.progress_canvas.pack(fill=tk.X)
@@ -135,46 +160,63 @@ class QRPlayerWindow:
         # ── 재생 제어 카드 ───────────────────────────────
         ctrl_card = tk.Frame(outer, bg=CARD,
                              highlightbackground=BORDER, highlightthickness=1)
-        ctrl_card.pack(fill=tk.X, pady=(0, 4))
-        inner_ctrl = tk.Frame(ctrl_card, bg=CARD, padx=12, pady=10)
+        ctrl_card.pack(fill=tk.X, pady=(0, 10))
+        inner_ctrl = tk.Frame(ctrl_card, bg=CARD, padx=12, pady=12)
         inner_ctrl.pack(fill=tk.X)
 
+        # 버튼 3개 – 전체 너비 채움
         ctrl_btn_row = tk.Frame(inner_ctrl, bg=CARD)
         ctrl_btn_row.pack(fill=tk.X)
 
         has_multi = len(qr_images) > 1
-        self.btn_start = styled_btn(ctrl_btn_row, "▶  시작", self.start_animation,
-                                    CTRL, CTRL_HOV, width=10,
-                                    state=tk.NORMAL if has_multi else tk.DISABLED)
-        self.btn_start.pack(side=tk.LEFT, padx=(0, 5))
+        self.btn_start = styled_btn(
+            ctrl_btn_row, "▶  시작", self.start_animation,
+            CTRL, CTRL_HOV, state=tk.NORMAL if has_multi else tk.DISABLED
+        )
+        self.btn_start.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
 
-        self.btn_pause = styled_btn(ctrl_btn_row, "⏸  일시정지", self.pause_animation,
-                                    NEUTRAL, NEUTRAL_HOV, width=10, state=tk.DISABLED)
-        self.btn_pause.pack(side=tk.LEFT, padx=(0, 5))
+        self.btn_pause = styled_btn(
+            ctrl_btn_row, "⏸  일시정지", self.pause_animation,
+            NEUTRAL, NEUTRAL_HOV, state=tk.DISABLED
+        )
+        self.btn_pause.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
 
-        self.btn_reset = styled_btn(ctrl_btn_row, "↩  처음으로", self.reset_animation,
-                                    NEUTRAL, NEUTRAL_HOV, width=10,
-                                    state=tk.NORMAL if has_multi else tk.DISABLED)
-        self.btn_reset.pack(side=tk.LEFT)
+        self.btn_reset = styled_btn(
+            ctrl_btn_row, "↩  처음으로", self.reset_animation,
+            NEUTRAL, NEUTRAL_HOV, state=tk.NORMAL if has_multi else tk.DISABLED
+        )
+        self.btn_reset.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         # 속도 조절
         speed_row = tk.Frame(inner_ctrl, bg=CARD)
         speed_row.pack(fill=tk.X, pady=(10, 0))
         tk.Label(speed_row, text="전환 간격",
                  bg=CARD, fg=TEXT_MUTED, font=(FONT, 9)).pack(side=tk.LEFT)
-        self.speed_entry = tk.Spinbox(
+        self.speed_var = tk.StringVar(value="0.5")
+        tk.Spinbox(
             speed_row, from_=0.1, to=10.0, increment=0.1,
             textvariable=self.speed_var, width=5,
             format="%.1f", font=(FONT, 10),
             bg=CARD, fg=TEXT, relief=tk.FLAT,
             highlightbackground=BORDER, highlightthickness=1,
             buttonbackground=BG
-        )
-        self.speed_entry.pack(side=tk.LEFT, padx=6)
+        ).pack(side=tk.LEFT, padx=6)
         tk.Label(speed_row, text="초", bg=CARD, fg=TEXT_MUTED, font=(FONT, 9)).pack(side=tk.LEFT)
 
-        # 첫 QR 표시
+        # 첫 QR 표시 후 창 위치 지정
         self._show_current()
+        self.win.update_idletasks()
+        self._place_relative_to_parent()
+
+    # ── 위치 지정 ────────────────────────────────────────
+
+    def _place_relative_to_parent(self):
+        px = self.parent_root.winfo_x()
+        py = self.parent_root.winfo_y()
+        pw = self.parent_root.winfo_width()
+        wx = px + pw + 12
+        wy = py
+        self.win.geometry(f"+{wx}+{wy}")
 
     # ── 유틸 ──────────────────────────────────────────────
 
@@ -189,7 +231,7 @@ class QRPlayerWindow:
         self.progress_canvas.update_idletasks()
         w = self.progress_canvas.winfo_width()
         if w <= 1:
-            w = 360
+            w = 380
         bar_w = int(w * max(0.0, min(fraction, 1.0)))
         self.progress_canvas.coords(self.progress_fill, 0, 0, bar_w, 8)
 
@@ -225,20 +267,35 @@ class QRPlayerWindow:
     def start_animation(self):
         if self.is_playing:
             return
-        # 재생 완료 후 시작 → 처음부터 다시
-        self.current_qr_index = 0
-        self._show_current()
-        self._draw_progress(0)
-        self.is_playing = True
-        self._set_ctrl_state(start=False, pause=True, reset=True)
-        self._start_progress()
+        if self.is_paused:
+            # 일시정지된 위치에서 재개
+            self.is_paused = False
+            self.is_playing = True
+            self._set_ctrl_state(start=False, pause=True, reset=True)
+            # 이미 흐른 시간을 반영해 시작 시각 역산
+            self.progress_start_time = time.time() - self.paused_elapsed_ms / 1000.0
+            self._update_progress()
+        else:
+            # 완료 후 또는 처음 → 1번째부터 새로 시작
+            self.is_paused = False
+            self.paused_elapsed_ms = 0.0
+            self.current_qr_index = 0
+            self._show_current()
+            self.is_playing = True
+            self._set_ctrl_state(start=False, pause=True, reset=True)
+            self._start_progress()
 
     def pause_animation(self):
+        # 현재까지 흐른 시간 저장
+        self.paused_elapsed_ms = (time.time() - self.progress_start_time) * 1000.0
+        self.is_paused = True
         self._stop_animation()
-        self._draw_progress(0)
+        # 프로그레스 바 현재 상태 유지 (리셋 안 함)
         self._set_ctrl_state(start=True, pause=False, reset=True)
 
     def reset_animation(self):
+        self.is_paused = False
+        self.paused_elapsed_ms = 0.0
         self._stop_animation()
         self._draw_progress(0)
         self.current_qr_index = 0
@@ -255,8 +312,8 @@ class QRPlayerWindow:
     def _update_progress(self):
         if not self.is_playing:
             return
-        elapsed_ms = (time.time() - self.progress_start_time) * 1000
-        fraction = elapsed_ms / self.get_interval_ms()
+        elapsed_ms = (time.time() - self.progress_start_time) * 1000.0
+        fraction   = elapsed_ms / self.get_interval_ms()
 
         if fraction < 1.0:
             self._draw_progress(fraction)
@@ -269,9 +326,10 @@ class QRPlayerWindow:
         if not self.is_playing:
             return
         if self.current_qr_index == len(self.qr_images) - 1:
-            # 마지막 QR → 정지, 시작 버튼 다시 활성화 (처음부터 재시작 가능)
+            # 마지막 QR → 완료
             self._stop_animation()
             self._draw_progress(0)
+            self.is_paused = False
             self._set_ctrl_state(start=True, pause=False, reset=True)
             return
         self.current_qr_index += 1
@@ -280,16 +338,17 @@ class QRPlayerWindow:
 
 
 # ════════════════════════════════════════════════════════
-#  메인 창
+#  메인 생성기 창
 # ════════════════════════════════════════════════════════
 
 class QRApp:
     def __init__(self, root):
-        self.root = root
+        self.root       = root
+        self.player_win = None
         self.root.title("QR 코드 생성기")
         self.root.resizable(False, False)
         self.root.configure(bg=BG)
-        self.player_win = None
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         outer = tk.Frame(root, bg=BG, padx=20, pady=18)
         outer.pack()
@@ -317,7 +376,7 @@ class QRApp:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.text_area = tk.Text(
-            text_frame, width=68, height=22,
+            text_frame, width=68, height=26,
             yscrollcommand=scrollbar.set,
             font=(FONT, 10), bg=CARD, fg=TEXT,
             relief=tk.FLAT, bd=8,
@@ -334,36 +393,31 @@ class QRApp:
                                    bg=CARD, fg=TEXT_MUTED, font=(FONT, 9))
         self.char_label.pack(side=tk.RIGHT)
 
-        # ── 버튼 행 ──────────────────────────────────────
+        # ── 버튼 행 – 전체 너비 채움 ─────────────────────
         btn_row = tk.Frame(outer, bg=BG)
         btn_row.pack(fill=tk.X, pady=(0, 4))
 
         styled_btn(btn_row, "QR 생성", self.generate_qr,
-                   PRIMARY, PRIMARY_HOV, width=12).pack(side=tk.LEFT, padx=(0, 6))
-        styled_btn(btn_row, "닫기", root.destroy,
-                   DANGER, DANGER_HOV, width=8).pack(side=tk.LEFT)
+                   PRIMARY, PRIMARY_HOV).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        styled_btn(btn_row, "닫기", self._on_close,
+                   DANGER, DANGER_HOV).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        # 전환 간격 (메인에서도 조절 가능, 재생 창과 공유)
-        self.speed_var = tk.StringVar(value="0.5")
-        speed_row = tk.Frame(outer, bg=BG)
-        speed_row.pack(anchor='e', pady=(4, 0))
-        tk.Label(speed_row, text="전환 간격",
-                 bg=BG, fg=TEXT_MUTED, font=(FONT, 9)).pack(side=tk.LEFT)
-        tk.Spinbox(
-            speed_row, from_=0.1, to=10.0, increment=0.1,
-            textvariable=self.speed_var, width=5,
-            format="%.1f", font=(FONT, 10),
-            bg=CARD, fg=TEXT, relief=tk.FLAT,
-            highlightbackground=BORDER, highlightthickness=1,
-            buttonbackground=BG
-        ).pack(side=tk.LEFT, padx=6)
-        tk.Label(speed_row, text="초", bg=BG, fg=TEXT_MUTED, font=(FONT, 9)).pack(side=tk.LEFT)
+        # ── 저장된 위치 복원 ─────────────────────────────
+        pos = reg_load_pos()
+        if pos:
+            self.root.update_idletasks()
+            self.root.geometry(f"+{pos[0]}+{pos[1]}")
 
     # ── 이벤트 ────────────────────────────────────────────
 
     def update_char_count(self, event=None):
         text = self.text_area.get("1.0", "end-1c")
         self.char_label.config(text=f"{len(text)} 글자")
+
+    def _on_close(self):
+        self.root.update_idletasks()
+        reg_save_pos(self.root.winfo_x(), self.root.winfo_y())
+        self.root.destroy()
 
     def generate_qr(self):
         text = self.text_area.get("1.0", "end-1c")
@@ -383,16 +437,15 @@ class QRApp:
             qr.add_data(content.encode('utf-8'))
             qr.make(fit=True)
             img = qr.make_image(fill_color="black", back_color="white").convert('RGB')
-            img = img.resize((360, 360), RESAMPLE)
+            img = img.resize((380, 380), RESAMPLE)
             qr_images.append(ImageTk.PhotoImage(img))
 
-        # 기존 재생 창이 열려 있으면 닫기
+        # 기존 재생 창 닫기
         if self.player_win and self.player_win.win.winfo_exists():
             self.player_win._stop_animation()
             self.player_win.win.destroy()
 
-        # 새 재생 창 열기
-        self.player_win = QRPlayerWindow(self.root, qr_images, self.speed_var)
+        self.player_win = QRPlayerWindow(self.root, qr_images)
 
 
 if __name__ == "__main__":
