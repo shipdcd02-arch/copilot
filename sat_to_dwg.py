@@ -303,7 +303,7 @@ class LogWindow:
         cnt_row.pack(anchor="w", pady=(5, 0))
 
         def _counter_cell(parent, icon, label, color):
-            f = tk.Frame(parent, relief="groove", bd=1, padx=8, pady=3)
+            f = tk.Frame(parent, padx=8, pady=3)
             f.pack(side="left", padx=(0, 8))
             tk.Label(f, text=icon, font=("Segoe UI Emoji", 10)).pack(side="left")
             tk.Label(f, text=f" {label}", font=("맑은 고딕", 8),
