@@ -482,8 +482,16 @@ class QRApp:
             self.root.update_idletasks()
             self.root.geometry(f"+{pos[0]}+{pos[1]}")
         self.root.after(50, lambda: hide_titlebar(self.root))
+        self.root.bind("<FocusIn>", self._on_main_focus)
 
     # ── 이벤트 ────────────────────────────────────────────
+
+    def _on_main_focus(self, event=None):
+        """메인 창이 포커스를 받으면 재생 창을 앞으로 올림"""
+        if (self.player_win
+                and self.player_win.win.winfo_exists()):
+            self.player_win.win.lift()
+            self.player_win.win.focus_force()
 
     def update_char_count(self, event=None):
         text = self.text_area.get("1.0", "end-1c")
