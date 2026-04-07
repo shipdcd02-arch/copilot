@@ -10,6 +10,7 @@ import datetime
 import struct
 import tempfile
 import winreg
+import ctypes
 
 # ──────────────────────────────────────────────
 # accoreconsole.exe 경로 후보
@@ -172,6 +173,19 @@ def set_icon(win):
     except Exception:
         pass
 
+def remove_minmax_buttons(win):
+    """최소화·최대화 버튼 제거 (작업표시줄·아이콘 유지)"""
+    def _apply():
+        try:
+            hwnd  = ctypes.windll.user32.GetParent(win.winfo_id())
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, -16)
+            style &= ~0x00020000  # WS_MINIMIZEBOX
+            style &= ~0x00010000  # WS_MAXIMIZEBOX
+            ctypes.windll.user32.SetWindowLongW(hwnd, -16, style)
+        except Exception:
+            pass
+    win.after(10, _apply)
+
 
 # ──────────────────────────────────────────────
 # 유틸
@@ -278,6 +292,7 @@ class LogWindow:
         restore_geometry(root, "log_geometry", "680x560")
         root.resizable(True, True)
         root.protocol("WM_DELETE_WINDOW", lambda: None)
+        remove_minmax_buttons(root)
 
         # ── 상태 영역 ────────────────────────────
         stat_frame = tk.Frame(root)
@@ -441,6 +456,7 @@ class OptionsDialog:
         set_icon(self.dlg)
         restore_geometry(self.dlg, "opt_geometry", "460x430")
         self.dlg.protocol("WM_DELETE_WINDOW", self._cancel)
+        remove_minmax_buttons(self.dlg)
 
         P = dict(padx=10, pady=3)
 
