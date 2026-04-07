@@ -3,7 +3,7 @@ import glob
 import subprocess
 import threading
 import tkinter as tk
-from tkinter import filedialog, scrolledtext, messagebox, ttk
+from tkinter import messagebox, scrolledtext, ttk
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import queue
 import datetime
@@ -37,7 +37,7 @@ DWG_VERSIONS = ["2018", "2013", "2010", "2007", "2004", "2000", "R14"]
 
 CPU_COUNT = os.cpu_count() or 2
 REG_PATH  = r"Software\SHI_AI\SAT2DWG"
-_ICO_PATH = os.path.join(tempfile.gettempdir(), "sat2dwg_app.ico")
+_ICO_PATH = os.path.join(tempfile.gettempdir(), "sat2dwg_v2.ico")
 
 
 # ──────────────────────────────────────────────
@@ -75,27 +75,87 @@ def save_geometry(win, reg_key):
 
 
 # ──────────────────────────────────────────────
-# 아이콘 생성 (CAD 테마 16×16 ICO)
+# 아이콘 생성 (32×32 아이소메트릭 큐브)
 # ──────────────────────────────────────────────
 def _make_ico():
     if os.path.exists(_ICO_PATH):
         return
-    W, H = 16, 16
-    pixels = []
-    for y in range(H - 1, -1, -1):   # ICO는 bottom-up
+    W = H = 32
+
+    def rgb(r, g, b, a=255):
+        return [b, g, r, a]   # BMP BGRA 순서
+
+    BG    = rgb(14, 22, 48)
+    TOP   = rgb(155, 205, 255)
+    RIGHT = rgb(55, 115, 200)
+    LEFT  = rgb(30, 70, 148)
+    EDGE  = rgb(225, 242, 255)
+
+    img = [[rgb(14, 22, 48)] * W for _ in range(H)]
+
+    def setp(x, y, c):
+        if 0 <= x < W and 0 <= y < H:
+            img[y][x] = list(c)
+
+    def fill_poly(verts, color):
+        ys = [v[1] for v in verts]
+        n  = len(verts)
+        for y in range(int(min(ys)), int(max(ys)) + 1):
+            xs = []
+            for i in range(n):
+                ax, ay = verts[i]
+                bx, by = verts[(i + 1) % n]
+                if ay == by:
+                    continue
+                lo, hi = (ay, by) if ay < by else (by, ay)
+                if lo <= y < hi:
+                    t = (y - ay) / (by - ay)
+                    xs.append(ax + t * (bx - ax))
+            if len(xs) >= 2:
+                for x in range(round(min(xs)), round(max(xs)) + 1):
+                    setp(x, y, color)
+
+    def draw_line(x0, y0, x1, y1, c):
+        dx = abs(x1 - x0); sx = 1 if x0 < x1 else -1
+        dy = abs(y1 - y0); sy = 1 if y0 < y1 else -1
+        err = dx - dy
+        while True:
+            setp(x0, y0, c)
+            if x0 == x1 and y0 == y1:
+                break
+            e2 = 2 * err
+            if e2 > -dy: err -= dy; x0 += sx
+            if e2 <  dx: err += dx; y0 += sy
+
+    # 아이소메트릭 큐브 꼭짓점
+    T  = (16,  3)   # 상단
+    TR = (26,  9)   # 우상
+    TL = ( 6,  9)   # 좌상
+    C  = (16, 15)   # 중심 (세 면이 만나는 전면 상단)
+    R  = (26, 20)   # 우하
+    L  = ( 6, 20)   # 좌하
+    B  = (16, 26)   # 하단
+
+    # 면 채우기 (상면, 우면, 좌면)
+    fill_poly([T, TR, C, TL], TOP)
+    fill_poly([TR, R, B, C],  RIGHT)
+    fill_poly([TL, C, B, L],  LEFT)
+
+    # 외곽 육각형 + 내부 3개 꼭짓점선
+    edges = [(T, TR), (TR, R), (R, B), (B, L), (L, TL), (TL, T),
+             (TR, C), (TL, C), (B, C)]
+    for a, b in edges:
+        draw_line(*a, *b, EDGE)
+
+    # BMP 직렬화 (하단→상단)
+    pixel_bytes = bytearray()
+    for y in range(H - 1, -1, -1):
         for x in range(W):
-            b, g, r, a = 45, 65, 105, 255          # 기본 남색
-            if x in (0, W-1) or y in (0, H-1):
-                b, g, r, a = 110, 150, 210, 255    # 테두리
-            elif y in (3, 7, 11) and 2 <= x <= 13:
-                b, g, r, a = 210, 230, 255, 255    # 가로 선 3개
-            elif x == 2 and 2 <= y <= 13:
-                b, g, r, a = 140, 180, 240, 255    # 세로 악센트
-            pixels.extend([b, g, r, a])
-    pixel_data = bytes(pixels)
-    and_mask   = bytes([0] * (4 * H))
-    bmp = struct.pack('<IiiHHIIiiII', 40, W, H * 2, 1, 32, 0, 0, 0, 0, 0, 0) \
-          + pixel_data + and_mask
+            pixel_bytes.extend(img[y][x])
+
+    and_mask = bytes(4 * H)   # W=32 → 4 bytes/행
+    bmp = (struct.pack('<IiiHHIIiiII', 40, W, H * 2, 1, 32, 0, 0, 0, 0, 0, 0)
+           + bytes(pixel_bytes) + and_mask)
     ico = (struct.pack('<HHH', 0, 1, 1)
            + struct.pack('<BBBBHHII', W, H, 0, 0, 1, 32, len(bmp), 22)
            + bmp)
@@ -167,7 +227,6 @@ def convert_single(accoreconsole_path, sat_path, base_folder, log_queue, options
     folder    = os.path.dirname(sat_path)
     dwg_path  = os.path.join(folder, base_name + ".dwg")
 
-    # 하부폴더 파일은 경로 포함 표시
     try:
         rel = os.path.relpath(sat_path, base_folder)
     except ValueError:
@@ -188,14 +247,12 @@ def convert_single(accoreconsole_path, sat_path, base_folder, log_queue, options
             timeout=options.get("timeout", 60),
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
-
         if os.path.exists(dwg_path):
             log_queue.put(("ok", f"[완료]    {display}.dwg"))
             return "ok"
         else:
             log_queue.put(("err", f"[실패]    {display}.sat  —  DWG 파일 미생성"))
             return "err"
-
     except subprocess.TimeoutExpired:
         log_queue.put(("err", f"[시간초과]  {display}.sat  ({options.get('timeout', 60)}초 초과)"))
         return "err"
@@ -218,21 +275,36 @@ class LogWindow:
 
         root.title("SAT → DWG 변환 중...")
         set_icon(root)
-        restore_geometry(root, "log_geometry", "640x580")
+        restore_geometry(root, "log_geometry", "680x560")
         root.resizable(True, True)
         root.protocol("WM_DELETE_WINDOW", lambda: None)
 
-        # 상태 표시줄 (크고 넓게)
-        self.status_var = tk.StringVar(
-            value=f"변환 중 ...          ( 0 / {total} )          완료  0          실패  0          건너뜀  0"
-        )
-        tk.Label(root, textvariable=self.status_var, anchor="w",
-                 font=("Consolas", 11, "bold")).pack(fill="x", padx=8, pady=(6, 2))
+        # ── 상태 영역 (2행) ──────────────────────
+        stat_frame = tk.Frame(root)
+        stat_frame.pack(fill="x", padx=8, pady=(6, 0))
+
+        # 1행: 진행 상태 (큰 글씨)
+        self._main_var = tk.StringVar(value=f"변환 중 ...    ( 0 / {total} )")
+        tk.Label(stat_frame, textvariable=self._main_var, anchor="w",
+                 font=("Consolas", 11, "bold")).pack(fill="x")
+
+        # 2행: 색상 카운터
+        cnt_row = tk.Frame(stat_frame)
+        cnt_row.pack(anchor="w", pady=(1, 0))
+        self._ok_var   = tk.StringVar(value="완료  0")
+        self._fail_var = tk.StringVar(value="실패  0")
+        self._skip_var = tk.StringVar(value="건너뜀  0")
+        tk.Label(cnt_row, textvariable=self._ok_var,
+                 fg="#6adc6a", font=("Consolas", 9, "bold")).pack(side="left", padx=(0, 18))
+        tk.Label(cnt_row, textvariable=self._fail_var,
+                 fg="#f97070", font=("Consolas", 9, "bold")).pack(side="left", padx=(0, 18))
+        tk.Label(cnt_row, textvariable=self._skip_var,
+                 fg="#c8b400", font=("Consolas", 9, "bold")).pack(side="left")
 
         # 프로그레스바
-        self.canvas = tk.Canvas(root, height=14, bg="#dde3ed", highlightthickness=0)
-        self.canvas.pack(fill="x", padx=8, pady=(0, 3))
-        self.bar = self.canvas.create_rectangle(0, 0, 0, 14, fill="#4caf50", width=0)
+        self.canvas = tk.Canvas(root, height=13, bg="#dde3ed", highlightthickness=0)
+        self.canvas.pack(fill="x", padx=8, pady=(4, 2))
+        self.bar = self.canvas.create_rectangle(0, 0, 0, 13, fill="#4caf50", width=0)
 
         # 로그 텍스트
         self.text = scrolledtext.ScrolledText(
@@ -240,7 +312,7 @@ class LogWindow:
             state="disabled", bg="#1e1e1e", fg="#d4d4d4",
             insertbackground="white"
         )
-        self.text.pack(fill="both", expand=True, padx=8, pady=(0, 3))
+        self.text.pack(fill="both", expand=True, padx=8, pady=(0, 2))
         self.text.tag_config("ok",   foreground="#6adc6a")
         self.text.tag_config("err",  foreground="#f97070")
         self.text.tag_config("skip", foreground="#c8b400")
@@ -268,20 +340,16 @@ class LogWindow:
         pct = self.done / self.total if self.total else 1
         self.canvas.update_idletasks()
         w = self.canvas.winfo_width()
-        self.canvas.coords(self.bar, 0, 0, int(w * pct), 14)
-        self.status_var.set(
-            f"변환 중 ...          ( {self.done} / {self.total} )"
-            f"          완료  {self.ok}"
-            f"          실패  {self.fail}"
-            f"          건너뜀  {self.skip}"
-        )
+        self.canvas.coords(self.bar, 0, 0, int(w * pct), 13)
+        self._main_var.set(f"변환 중 ...    ( {self.done} / {self.total} )")
+        self._ok_var.set(f"완료  {self.ok}")
+        self._fail_var.set(f"실패  {self.fail}")
+        self._skip_var.set(f"건너뜀  {self.skip}")
 
     def finish(self):
-        self.status_var.set(
-            f"완료 !          성공  {self.ok} 개"
-            f"          실패  {self.fail} 개"
-            f"          건너뜀  {self.skip} 개"
-            f"          전체  {self.total} 개"
+        self._main_var.set(
+            f"완료 !    성공  {self.ok} 개    실패  {self.fail} 개"
+            f"    건너뜀  {self.skip} 개    전체  {self.total} 개"
         )
         self.root.title("SAT → DWG 변환 완료")
         self.close_btn.configure(state="normal")
@@ -335,19 +403,152 @@ def run_conversion(accoreconsole_path, sat_files, base_folder, log_win, options)
 
 
 # ──────────────────────────────────────────────
+# 폴더 선택 창 (위치 기억)
+# ──────────────────────────────────────────────
+class FolderBrowserDialog:
+    def __init__(self, parent):
+        self.result  = None
+        self._entries = []
+
+        self.dlg = tk.Toplevel(parent)
+        self.dlg.title("폴더 선택")
+        self.dlg.resizable(True, True)
+        self.dlg.grab_set()
+        set_icon(self.dlg)
+        restore_geometry(self.dlg, "folder_geometry", "520x400")
+        self.dlg.protocol("WM_DELETE_WINDOW", self._cancel)
+
+        # ── 경로 표시줄 ─────────────────────────
+        bar = tk.Frame(self.dlg)
+        bar.pack(fill="x", padx=6, pady=(6, 2))
+
+        # 드라이브 선택
+        drives = [f"{c}:\\" for c in "CDEFGHIJKLMNOPQRSTUVWXYZ"
+                  if os.path.exists(f"{c}:\\")]
+        if not drives:
+            drives = ["C:\\"]
+        self._drive_var = tk.StringVar(value=drives[0])
+        drv_cb = ttk.Combobox(bar, textvariable=self._drive_var,
+                              values=drives, state="readonly", width=5)
+        drv_cb.pack(side="left", padx=(0, 4))
+        drv_cb.bind("<<ComboboxSelected>>",
+                    lambda e: self._navigate(self._drive_var.get()))
+
+        tk.Button(bar, text="↑ 상위", command=self._go_up).pack(side="left", padx=(0, 4))
+
+        self.path_var = tk.StringVar()
+        pe = tk.Entry(bar, textvariable=self.path_var, font=("Consolas", 9))
+        pe.pack(side="left", fill="x", expand=True)
+        pe.bind("<Return>", lambda e: self._navigate(self.path_var.get()))
+
+        # ── 목록 ────────────────────────────────
+        lf = tk.Frame(self.dlg)
+        lf.pack(fill="both", expand=True, padx=6, pady=2)
+        sb = tk.Scrollbar(lf)
+        sb.pack(side="right", fill="y")
+        self.lb = tk.Listbox(lf, yscrollcommand=sb.set, font=("", 9),
+                             selectmode="single", activestyle="none")
+        sb.config(command=self.lb.yview)
+        self.lb.pack(fill="both", expand=True)
+        self.lb.bind("<Double-1>", self._on_double)
+        self.lb.bind("<Return>", lambda e: self._ok())
+
+        # ── 버튼 ────────────────────────────────
+        br = tk.Frame(self.dlg)
+        br.pack(pady=(2, 6))
+        tk.Button(br, text="이 폴더 선택", width=14,
+                  bg="#4caf50", fg="white", font=("", 9, "bold"),
+                  command=self._ok).pack(side="left", padx=4)
+        tk.Button(br, text="취소", width=8,
+                  command=self._cancel).pack(side="left", padx=4)
+
+        # 초기 경로 (마지막 사용 또는 홈)
+        init = reg_load("last_folder") or os.path.expanduser("~")
+        if not os.path.isdir(init):
+            init = os.path.expanduser("~")
+        self._current = init
+        self._navigate(init)
+
+    def _list_dirs(self, path):
+        try:
+            items = []
+            with os.scandir(path) as it:
+                for e in it:
+                    try:
+                        if not e.is_dir(follow_symlinks=False):
+                            continue
+                        # 숨김 폴더 제외
+                        attr = e.stat(follow_symlinks=False).st_file_attributes
+                        if attr & 2:   # FILE_ATTRIBUTE_HIDDEN
+                            continue
+                        items.append(e.name)
+                    except Exception:
+                        continue
+            return sorted(items, key=str.lower)
+        except Exception:
+            return []
+
+    def _navigate(self, path):
+        path = os.path.normpath(path)
+        if not os.path.isdir(path):
+            return
+        self._current = path
+        self.path_var.set(path)
+
+        # 드라이브 콤보 동기화
+        drive = os.path.splitdrive(path)[0] + "\\"
+        self._drive_var.set(drive)
+
+        self.lb.delete(0, "end")
+        self._entries = []
+        for name in self._list_dirs(path):
+            self.lb.insert("end", f"   {name}")
+            self._entries.append(os.path.join(path, name))
+
+    def _on_double(self, _event):
+        sel = self.lb.curselection()
+        if sel:
+            self._navigate(self._entries[sel[0]])
+
+    def _go_up(self):
+        parent = os.path.dirname(self._current)
+        if parent and parent != self._current:
+            self._navigate(parent)
+
+    def _ok(self):
+        sel = self.lb.curselection()
+        if sel:
+            self._current = self._entries[sel[0]]
+        if not self._current:
+            return
+        save_geometry(self.dlg, "folder_geometry")
+        reg_save("last_folder", self._current)
+        self.result = self._current
+        self.dlg.destroy()
+
+    def _cancel(self):
+        save_geometry(self.dlg, "folder_geometry")
+        self.dlg.destroy()
+
+    def show(self):
+        self.dlg.wait_window()
+        return self.result
+
+
+# ──────────────────────────────────────────────
 # 옵션 창
 # ──────────────────────────────────────────────
 class OptionsDialog:
     def __init__(self, parent):
         self.result       = None
-        self._workers_val = CPU_COUNT
+        self._workers_val = CPU_COUNT   # 기본 = 최대
 
         self.dlg = tk.Toplevel(parent)
         self.dlg.title("SAT → DWG 변환 옵션")
         self.dlg.resizable(False, False)
         self.dlg.grab_set()
         set_icon(self.dlg)
-        restore_geometry(self.dlg, "opt_geometry", "460x450")
+        restore_geometry(self.dlg, "opt_geometry", "460x430")
         self.dlg.protocol("WM_DELETE_WINDOW", self._cancel)
 
         P = dict(padx=10, pady=3)
@@ -358,11 +559,13 @@ class OptionsDialog:
         self.scale_var = tk.StringVar(value="1:1")
         row_top = tk.Frame(sf); row_top.pack(fill="x")
         for lbl in SCALE_OPTIONS_TOP:
-            tk.Radiobutton(row_top, text=lbl, variable=self.scale_var, value=lbl).pack(side="left", padx=8)
+            tk.Radiobutton(row_top, text=lbl, variable=self.scale_var,
+                           value=lbl).pack(side="left", padx=8)
         ttk.Separator(sf, orient="horizontal").pack(fill="x", pady=2)
         row_bot = tk.Frame(sf); row_bot.pack(fill="x")
         for lbl in SCALE_OPTIONS_BOTTOM:
-            tk.Radiobutton(row_bot, text=lbl, variable=self.scale_var, value=lbl).pack(side="left", padx=6)
+            tk.Radiobutton(row_bot, text=lbl, variable=self.scale_var,
+                           value=lbl).pack(side="left", padx=6)
 
         # ── 변환 옵션 ────────────────────────────
         cf = tk.LabelFrame(self.dlg, text=" 변환 옵션 ", font=("", 9, "bold"), padx=6, pady=3)
@@ -390,17 +593,18 @@ class OptionsDialog:
         af = tk.LabelFrame(self.dlg, text=" 고급 옵션 ", font=("", 9, "bold"), padx=6, pady=3)
         af.pack(fill="x", **P)
 
-        # 코어 수 — '최대' 기본, ▼ 누르면 숫자
+        # 코어 수 — 일반 Label + ▲▼ 버튼
         r1 = tk.Frame(af); r1.pack(fill="x", pady=2)
         tk.Label(r1, text="동시 처리 코어 수:").pack(side="left")
         self._workers_disp = tk.StringVar(value="최대")
-        tk.Label(r1, textvariable=self._workers_disp, width=5,
-                 font=("Consolas", 9, "bold"), relief="sunken",
-                 bg="white", anchor="center").pack(side="left", padx=3)
-        tk.Button(r1, text="▲", width=2, command=self._inc_workers).pack(side="left")
-        tk.Button(r1, text="▼", width=2, command=self._dec_workers).pack(side="left")
-        tk.Label(r1, text=f"(시스템 최대 {CPU_COUNT}코어)", fg="gray",
-                 font=("", 8)).pack(side="left", padx=4)
+        tk.Label(r1, textvariable=self._workers_disp,
+                 width=4, anchor="w", font=("", 9)).pack(side="left", padx=3)
+        tk.Button(r1, text="▲", width=2, pady=0,
+                  command=self._inc_workers).pack(side="left")
+        tk.Button(r1, text="▼", width=2, pady=0,
+                  command=self._dec_workers).pack(side="left")
+        tk.Label(r1, text=f"(최대 {CPU_COUNT}코어)",
+                 fg="gray", font=("", 8)).pack(side="left", padx=4)
 
         # 제한 시간
         r2 = tk.Frame(af); r2.pack(fill="x", pady=2)
@@ -423,11 +627,12 @@ class OptionsDialog:
         tk.Button(btn_row, text="취소", width=8,
                   command=self._cancel).pack(side="left", padx=6)
 
-    # ── 코어 수 버튼 ──────────────────────────────
     def _inc_workers(self):
         if self._workers_val < CPU_COUNT:
             self._workers_val += 1
-        self._workers_disp.set("최대" if self._workers_val >= CPU_COUNT else str(self._workers_val))
+        self._workers_disp.set(
+            "최대" if self._workers_val >= CPU_COUNT else str(self._workers_val)
+        )
 
     def _dec_workers(self):
         if self._workers_val > 1:
@@ -469,9 +674,7 @@ def main():
     accoreconsole_path = find_accoreconsole()
 
     # 2) 옵션 창
-    dlg     = OptionsDialog(root_hidden)
-    options = dlg.show()
-
+    options = OptionsDialog(root_hidden).show()
     if options is None:
         root_hidden.destroy()
         return
@@ -486,11 +689,8 @@ def main():
         root_hidden.destroy()
         return
 
-    # 3) 폴더 선택
-    folder = filedialog.askdirectory(
-        title="SAT 파일이 있는 폴더를 선택하세요",
-        parent=root_hidden
-    )
+    # 3) 폴더 선택 (위치 기억되는 커스텀 다이얼로그)
+    folder = FolderBrowserDialog(root_hidden).show()
     if not folder:
         root_hidden.destroy()
         return
