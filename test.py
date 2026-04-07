@@ -1,16 +1,18 @@
-; C3-1 블럭 생성
+; C3-1 블럭 생성 (내부 교차선 없는 5각 별 외곽선)
 (if (not (tblsearch "BLOCK" "C3-1"))
     (progn
-      ;; 반지름 150인 원에 내접하는 정삼각형의 외접원(r=150)에 내접하는 5각 별
-      ;; 꼭짓점은 90도(위쪽)부터 72도 간격, 별 연결 순서: 0→2→4→1→3
-      (setq r 150)
-      (setq pt0 (list (* r (cos (* pi 0.5)))                    (* r (sin (* pi 0.5)))                    0)) ; 90°
-      (setq pt1 (list (* r (cos (+ (* pi 0.5) (* 2 (/ pi 5))))) (* r (sin (+ (* pi 0.5) (* 2 (/ pi 5))))) 0)) ; 162°
-      (setq pt2 (list (* r (cos (+ (* pi 0.5) (* 4 (/ pi 5))))) (* r (sin (+ (* pi 0.5) (* 4 (/ pi 5))))) 0)) ; 234°
-      (setq pt3 (list (* r (cos (+ (* pi 0.5) (* 6 (/ pi 5))))) (* r (sin (+ (* pi 0.5) (* 6 (/ pi 5))))) 0)) ; 306°
-      (setq pt4 (list (* r (cos (+ (* pi 0.5) (* 8 (/ pi 5))))) (* r (sin (+ (* pi 0.5) (* 8 (/ pi 5))))) 0)) ; 18°
-      ;; 별 모양: 한 꼭짓점 건너뛰며 연결 (0→2→4→1→3→닫기)
-      (command "_.PLINE" pt0 pt2 pt4 pt1 pt3 "_C")
+      (setq r     150)
+      (setq r-in  (* r (/ 2.0 (+ 3.0 (sqrt 5.0))))) ; 내부 반지름 ≈ 57.3
+      ;; 외부점(r)과 내부점(r-in)을 36° 간격으로 교대 배치 → 10개 꼭짓점
+      (setq pts (list))
+      (setq i 0)
+      (repeat 10
+        (setq ang (+ (/ pi 2) (* i (/ pi 5)))) ; 90°부터 36° 간격
+        (setq cur-r (if (= (rem i 2) 0) r r-in)) ; 짝수: 외부, 홀수: 내부
+        (setq pts (append pts (list (list (* cur-r (cos ang)) (* cur-r (sin ang)) 0))))
+        (setq i (1+ i))
+      )
+      (apply 'command (append (list "_.PLINE") pts (list "_C")))
       (command "_.-BLOCK" "C3-1" '(0 0 0) (entlast) "")
       ;(princ "\n▶ [C3-1] 블럭 생성 완료.")
     )
