@@ -296,7 +296,7 @@ class LogWindow:
 
         self._progress_var = tk.StringVar(value=f"0 / {total}")
         tk.Label(top_row, textvariable=self._progress_var,
-                 font=("Consolas", 10), fg="#888888", anchor="e").pack(side="right")
+                 font=("맑은 고딕", 11, "bold"), anchor="e").pack(side="right")
 
         # 2행: 카운터 칸
         cnt_row = tk.Frame(stat_frame)
@@ -304,10 +304,9 @@ class LogWindow:
 
         def _counter_cell(parent, icon, label, color):
             f = tk.Frame(parent, padx=8, pady=3)
-            f.pack(side="left", padx=(0, 8))
+            f.pack(side="left", padx=(0, 24))
             tk.Label(f, text=icon, font=("Segoe UI Emoji", 10)).pack(side="left")
-            tk.Label(f, text=f" {label}", font=("맑은 고딕", 8),
-                     fg="#666666").pack(side="left")
+            tk.Label(f, text=f" {label}", font=("맑은 고딕", 9)).pack(side="left")
             var = tk.StringVar(value="0")
             tk.Label(f, textvariable=var, font=("Consolas", 11, "bold"),
                      fg=color, width=4, anchor="e").pack(side="left")
