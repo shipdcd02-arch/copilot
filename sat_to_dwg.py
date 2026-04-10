@@ -36,6 +36,19 @@ SCALE_FACTOR_MAP = {
 }
 DWG_VERSIONS = ["2018", "2013", "2010", "2007", "2004", "2000", "R14"]
 
+# AutoCAD Color Index 표준 색상 (번호: (hex, 한국어 이름))
+ACI_STANDARD = {
+    1:  ("#FF0000", "빨강"),
+    2:  ("#FFFF00", "노랑"),
+    3:  ("#00FF00", "녹색"),
+    4:  ("#00FFFF", "청록"),
+    5:  ("#0000FF", "파랑"),
+    6:  ("#FF00FF", "자홍"),
+    7:  ("#FFFFFF", "흰색"),
+    8:  ("#414141", "진회색"),
+    9:  ("#808080", "회색"),
+}
+
 CPU_COUNT = os.cpu_count() or 2
 REG_PATH  = r"Software\SHI_AI\SAT2DWG"
 _ICO_PATH = os.path.join(tempfile.gettempdir(), "sat2dwg_v2.ico")
@@ -250,6 +263,15 @@ def collect_sat_files(folder, include_subfolders):
         return result
     return glob.glob(os.path.join(folder, "*.sat"))
 
+def aci_to_hex(num):
+    """AutoCAD 색상 번호 → 근사 hex 색상 문자열"""
+    if num in ACI_STANDARD:
+        return ACI_STANDARD[num][0]
+    if 250 <= num <= 255:
+        v = int((num - 250) / 5 * 200 + 50)
+        return f"#{v:02X}{v:02X}{v:02X}"
+    return "#888888"
+
 def sanitize_layer_name(name):
     for ch in r'<>/\"|:;?*=,`':
         name = name.replace(ch, "_")
@@ -262,14 +284,31 @@ def build_script(sat_path, dwg_path, options):
     layer_name   = sanitize_layer_name(
         os.path.splitext(os.path.basename(sat_path))[0]
     )
+    solid_color  = options.get("solid_color")  # None 또는 int (1-255)
+
     lines = []
     if use_layer:
         lines += ["-LAYER", "M", layer_name, ""]
     lines.append(f'_ACISIN "{sat_path}"')
-    if use_layer:
+
+    # 레이어·색상 동시 적용 (CHPROP 한 번으로 처리)
+    if use_layer and solid_color is not None:
+        lines += ["_CHPROP", "_all", "", "LA", layer_name, "C", str(solid_color), ""]
+    elif use_layer:
         lines += ["_CHPROP", "_all", "", "LA", layer_name, ""]
+    elif solid_color is not None:
+        lines += ["_CHPROP", "_all", "", "C", str(solid_color), ""]
+
     if scale_factor != 1:
         lines += ["_SCALE", "_all", "", "0,0,0", str(scale_factor)]
+
+    # 모든 수정 완료 후 레이어 잠금
+    if use_layer:
+        lines += ["-LAYER", "L", layer_name, ""]
+
+    # 저장 전 전체 보기 (Zoom Extents)
+    lines += ["_ZOOM", "_E"]
+
     lines += ["_SAVEAS", dwg_version, f'"{dwg_path}"', "_QUIT Y", ""]
     return "\n".join(lines)
 
@@ -503,7 +542,7 @@ class OptionsDialog:
         self.dlg.resizable(False, False)
         self.dlg.grab_set()
         set_icon(self.dlg)
-        restore_geometry(self.dlg, "opt_geometry", "460x430")
+        restore_geometry(self.dlg, "opt_geometry", "460x530")
         self.dlg.protocol("WM_DELETE_WINDOW", self._cancel)
         remove_minmax_buttons(self.dlg)
 
@@ -535,6 +574,62 @@ class OptionsDialog:
         self.include_subfolders_var = tk.BooleanVar(value=False)
         tk.Checkbutton(cf, text="하부폴더 포함 (하위 폴더의 SAT 파일까지 변환)",
                        variable=self.include_subfolders_var).pack(anchor="w")
+
+        # ── 3D 솔리드 색상 ──────────────────────────
+        xf = tk.LabelFrame(self.dlg, text=" 3D 솔리드 색상 ", font=("", 9, "bold"), padx=6, pady=3)
+        xf.pack(fill="x", **P)
+
+        self.use_color_var = tk.BooleanVar(value=False)
+        self.color_num_var = tk.IntVar(value=7)
+
+        tk.Checkbutton(xf, text="색상 변환 적용 (모든 3D 솔리드)",
+                       variable=self.use_color_var,
+                       command=self._toggle_color).pack(anchor="w")
+
+        color_row = tk.Frame(xf)
+        color_row.pack(fill="x", pady=(3, 1))
+
+        # 표준 색상 버튼 1–7
+        std_frame = tk.Frame(color_row)
+        std_frame.pack(side="left")
+        tk.Label(std_frame, text="표준색: ", font=("", 8)).pack(side="left")
+        self._std_btns = []
+        for num, (hex_c, _name) in ACI_STANDARD.items():
+            if num > 7:
+                break
+            outline = "#000000" if num == 7 else hex_c
+            btn = tk.Button(
+                std_frame, bg=hex_c, width=2, height=1,
+                relief="raised", bd=1, cursor="hand2",
+                highlightbackground=outline,
+                command=lambda n=num: self._set_color(n),
+            )
+            btn.pack(side="left", padx=1)
+            self._std_btns.append(btn)
+
+        # 색상 번호 스핀박스
+        tk.Label(color_row, text="  번호:", font=("", 8)).pack(side="left")
+        self._color_spin = tk.Spinbox(
+            color_row, from_=1, to=255, textvariable=self.color_num_var,
+            width=4, command=self._update_color_preview,
+        )
+        self._color_spin.pack(side="left", padx=2)
+        self._color_spin.bind("<KeyRelease>", lambda e: self._update_color_preview())
+
+        # 미리보기 스와치
+        self._swatch = tk.Canvas(color_row, width=22, height=18, bd=1, relief="sunken",
+                                  highlightthickness=0)
+        self._swatch.pack(side="left", padx=4)
+        self._swatch_rect = self._swatch.create_rectangle(0, 0, 22, 18, fill="#FFFFFF", outline="")
+
+        # 색상 이름 레이블
+        self._color_name_var = tk.StringVar(value="")
+        tk.Label(color_row, textvariable=self._color_name_var,
+                 fg="gray", font=("", 8)).pack(side="left")
+
+        self._color_widgets = [self._color_spin] + self._std_btns
+        self._toggle_color()
+        self._update_color_preview()
 
         # ── DWG 버전 ─────────────────────────────
         vf = tk.LabelFrame(self.dlg, text=" DWG 저장 버전 ", font=("", 9, "bold"), padx=6, pady=3)
@@ -583,6 +678,31 @@ class OptionsDialog:
         tk.Button(btn_row, text="취소", width=8,
                   command=self._cancel).pack(side="left", padx=6)
 
+    def _toggle_color(self):
+        state = "normal" if self.use_color_var.get() else "disabled"
+        self._color_spin.config(state=state)
+        for btn in self._std_btns:
+            btn.config(state=state)
+
+    def _set_color(self, num):
+        self.color_num_var.set(num)
+        self._update_color_preview()
+
+    def _update_color_preview(self):
+        try:
+            num = int(self.color_num_var.get())
+            num = max(1, min(255, num))
+        except (ValueError, tk.TclError):
+            return
+        hex_c = aci_to_hex(num)
+        self._swatch.itemconfig(self._swatch_rect, fill=hex_c)
+        if num in ACI_STANDARD:
+            self._color_name_var.set(ACI_STANDARD[num][1])
+        elif 250 <= num <= 255:
+            self._color_name_var.set("회색 계열")
+        else:
+            self._color_name_var.set(f"ACI {num}")
+
     def _inc_workers(self):
         if self._workers_val < CPU_COUNT:
             self._workers_val += 1
@@ -597,6 +717,12 @@ class OptionsDialog:
 
     def _ok(self):
         save_geometry(self.dlg, "opt_geometry")
+        solid_color = None
+        if self.use_color_var.get():
+            try:
+                solid_color = max(1, min(255, int(self.color_num_var.get())))
+            except (ValueError, tk.TclError):
+                solid_color = None
         self.result = {
             "scale":              self.scale_var.get(),
             "auto_layer":         self.auto_layer_var.get(),
@@ -606,6 +732,7 @@ class OptionsDialog:
             "workers":            self._workers_val,
             "timeout":            self.timeout_var.get(),
             "stop_on_error":      self.stop_on_error_var.get(),
+            "solid_color":        solid_color,
         }
         self.dlg.destroy()
 
