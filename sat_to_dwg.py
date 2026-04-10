@@ -203,6 +203,99 @@ def remove_minmax_buttons(win):
 
 
 # ──────────────────────────────────────────────
+# AutoCAD COM 재저장 워커
+# ──────────────────────────────────────────────
+class AutoCADResaver:
+    """AutoCAD를 COM으로 제어해 DWG를 열고 다시 저장한다.
+    accoreconsole 스레드와 병행 시작해 초기화 시간을 숨긴다."""
+
+    def __init__(self, log_queue):
+        self.log_queue  = log_queue
+        self._q         = queue.Queue()
+        self._acad      = None
+        self._available = False
+        self._thread    = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        try:
+            import win32com.client
+            self._acad = win32com.client.Dispatch("AutoCAD.Application")
+            self._acad.Visible = False
+            self._available = True
+            self.log_queue.put(("info", "[AutoCAD] 백그라운드 인스턴스 준비 완료\n"))
+        except ImportError:
+            self.log_queue.put(("err",
+                "[AutoCAD] pywin32 미설치 — 터미널에서 'pip install pywin32' 실행 후 재시도"))
+        except Exception as e:
+            self.log_queue.put(("err", f"[AutoCAD] 시작 실패: {e}"))
+
+        while True:
+            item = self._q.get()
+            if item is None:
+                break
+            dwg_path, display, on_done = item
+            if not self._available:
+                on_done("err", display, "AutoCAD 사용 불가")
+                continue
+            try:
+                doc = self._acad.Documents.Open(dwg_path)
+                doc.Save()
+                doc.Close(False)
+                on_done("ok", display, None)
+            except Exception as e:
+                on_done("err", display, str(e))
+
+    def submit(self, dwg_path, display, on_done):
+        self._q.put((dwg_path, display, on_done))
+
+    def stop(self):
+        self._q.put(None)
+        self._thread.join(timeout=30)
+        if self._acad:
+            try:
+                self._acad.Quit()
+            except Exception:
+                pass
+
+
+class _PipelineCoord:
+    """accoreconsole 완료 + AutoCAD 재저장 완료를 조율한다."""
+
+    def __init__(self, log_queue, finish_cb):
+        self._lock        = threading.Lock()
+        self._pending     = 0          # AutoCAD 재저장 대기 중인 파일 수
+        self._accore_done = False
+        self._log_queue   = log_queue
+        self._finish_cb   = finish_cb
+
+    def accore_submit(self):
+        """accoreconsole이 DWG 생성에 성공해 AutoCAD 큐에 올릴 때 호출"""
+        with self._lock:
+            self._pending += 1
+
+    def on_resave(self, status, display, err_msg):
+        """AutoCAD 재저장 콜백"""
+        if status == "ok":
+            self._log_queue.put(("ok",  f"[완료]    {display}.dwg"))
+        else:
+            self._log_queue.put(("err", f"[AutoCAD 저장 실패]  {display}.dwg — {err_msg}"))
+        with self._lock:
+            self._pending -= 1
+            self._try_finish()
+
+    def accore_finished(self):
+        """모든 accoreconsole 스레드가 끝났을 때 호출"""
+        with self._lock:
+            self._accore_done = True
+            self._try_finish()
+
+    def _try_finish(self):
+        if self._accore_done and self._pending == 0:
+            self._finish_cb()
+
+
+# ──────────────────────────────────────────────
 # 유틸
 # ──────────────────────────────────────────────
 def find_accoreconsole():
@@ -331,17 +424,17 @@ def convert_single(accoreconsole_path, sat_path, base_folder, log_queue, options
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         if os.path.exists(dwg_path):
-            log_queue.put(("ok", f"[완료]    {display}.dwg"))
-            return "ok"
+            # accore 성공 → AutoCAD 재저장 대기 (로그는 재저장 후 출력)
+            return ("pending", dwg_path, display)
         else:
             log_queue.put(("err", f"[실패]    {display}.sat  —  DWG 파일 미생성"))
-            return "err"
+            return ("err",)
     except subprocess.TimeoutExpired:
         log_queue.put(("err", f"[시간초과]  {display}.sat  ({options.get('timeout', 60)}초 초과)"))
-        return "err"
+        return ("err",)
     except Exception as e:
         log_queue.put(("err", f"[오류]    {display}.sat  —  {e}"))
-        return "err"
+        return ("err",)
 
 
 # ──────────────────────────────────────────────
@@ -463,6 +556,9 @@ class LogWindow:
         self.close_btn.configure(state="normal")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
+    def set_phase(self, text):
+        self._status_var.set(text)
+
     def poll_queue(self):
         try:
             while True:
@@ -492,6 +588,14 @@ def run_conversion(accoreconsole_path, sat_files, base_folder, log_win, options)
         f"   /   파일 {len(sat_files)}개   /   동시 처리 {workers}코어\n"
     ))
 
+    # ── AutoCAD 재저장 워커를 accoreconsole과 동시에 시작 (초기화 시간 숨김)
+    resaver = AutoCADResaver(log_win.log_queue)
+
+    coord = _PipelineCoord(
+        log_win.log_queue,
+        finish_cb=lambda: log_win.root.after(0, log_win.finish),
+    )
+
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
             executor.submit(
@@ -503,11 +607,20 @@ def run_conversion(accoreconsole_path, sat_files, base_folder, log_win, options)
         for future in as_completed(futures):
             if stop_event.is_set():
                 break
-            if options.get("stop_on_error") and future.result() == "err":
+            result = future.result()
+            tag = result[0] if isinstance(result, tuple) else result
+            if tag == "pending":
+                _, dwg_path, display = result
+                coord.accore_submit()
+                resaver.submit(dwg_path, display, coord.on_resave)
+            elif tag == "err" and options.get("stop_on_error"):
                 stop_event.set()
                 log_win.log_queue.put(("err", "[중단]  오류 발생으로 나머지 변환을 중단합니다."))
 
-    log_win.root.after(0, log_win.finish)
+    # accoreconsole 전부 완료 → AutoCAD 재저장 대기 단계로 전환
+    log_win.log_queue.put(("info", "[accore 완료]  AutoCAD 재저장 대기 중...\n"))
+    log_win.root.after(0, lambda: log_win.set_phase("AutoCAD 재저장 중..."))
+    coord.accore_finished()
 
 
 # ──────────────────────────────────────────────
