@@ -3,7 +3,7 @@ import glob
 import subprocess
 import threading
 import tkinter as tk
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import messagebox, scrolledtext, ttk, colorchooser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import queue
 import datetime
@@ -11,6 +11,7 @@ import struct
 import tempfile
 import winreg
 import ctypes
+import colorsys
 
 # ──────────────────────────────────────────────
 # accoreconsole.exe 경로 후보
@@ -264,12 +265,27 @@ def collect_sat_files(folder, include_subfolders):
     return glob.glob(os.path.join(folder, "*.sat"))
 
 def aci_to_hex(num):
-    """AutoCAD 색상 번호 → 근사 hex 색상 문자열"""
+    """AutoCAD ACI 번호 → 근사 hex 색상 (10-249는 HSV 보간)"""
     if num in ACI_STANDARD:
         return ACI_STANDARD[num][0]
     if 250 <= num <= 255:
-        v = int((num - 250) / 5 * 200 + 50)
+        v = int(50 + (num - 250) / 5 * 200)
         return f"#{v:02X}{v:02X}{v:02X}"
+    if 10 <= num <= 249:
+        idx = num - 10
+        hue_idx = idx // 10          # 0-23: 24가지 색상
+        pos     = idx % 10           # 0-9: 밝기/채도 단계
+        hue     = hue_idx / 24.0
+        if pos < 5:
+            # 0→풀컬러, 4→연한색 (채도 감소)
+            s_list = [1.0, 0.75, 0.5, 0.25, 0.1]
+            s, v = s_list[pos], 1.0
+        else:
+            # 5→어두운색, 9→매우 어두운색 (명도 감소)
+            v_list = [0.75, 0.5, 0.25, 0.12, 0.05]
+            s, v = 1.0, v_list[pos - 5]
+        r, g, b = colorsys.hsv_to_rgb(hue, s, v)
+        return f"#{int(r*255):02X}{int(g*255):02X}{int(b*255):02X}"
     return "#888888"
 
 def sanitize_layer_name(name):
@@ -284,7 +300,20 @@ def build_script(sat_path, dwg_path, options):
     layer_name   = sanitize_layer_name(
         os.path.splitext(os.path.basename(sat_path))[0]
     )
-    solid_color  = options.get("solid_color")  # None 또는 int (1-255)
+    solid_color_aci = options.get("solid_color_aci")   # int(1-255) or None
+    solid_color_rgb = options.get("solid_color_rgb")   # (r,g,b) or None
+
+    def _color_args():
+        """CHPROP 색상 인자 목록 반환"""
+        if solid_color_aci is not None:
+            return ["C", str(solid_color_aci)]
+        if solid_color_rgb is not None:
+            r, g, b = solid_color_rgb
+            # AutoCAD TrueColor: C → t(ruecolor) → R,G,B
+            return ["C", "t", f"{r},{g},{b}"]
+        return []
+
+    has_color = solid_color_aci is not None or solid_color_rgb is not None
 
     lines = []
     if use_layer:
@@ -292,12 +321,12 @@ def build_script(sat_path, dwg_path, options):
     lines.append(f'_ACISIN "{sat_path}"')
 
     # 레이어·색상 동시 적용 (CHPROP 한 번으로 처리)
-    if use_layer and solid_color is not None:
-        lines += ["_CHPROP", "_all", "", "LA", layer_name, "C", str(solid_color), ""]
+    if use_layer and has_color:
+        lines += ["_CHPROP", "_all", "", "LA", layer_name] + _color_args() + [""]
     elif use_layer:
         lines += ["_CHPROP", "_all", "", "LA", layer_name, ""]
-    elif solid_color is not None:
-        lines += ["_CHPROP", "_all", "", "C", str(solid_color), ""]
+    elif has_color:
+        lines += ["_CHPROP", "_all", ""] + _color_args() + [""]
 
     if scale_factor != 1:
         lines += ["_SCALE", "_all", "", "0,0,0", str(scale_factor)]
@@ -539,10 +568,11 @@ class OptionsDialog:
 
         self.dlg = tk.Toplevel(parent)
         self.dlg.title("SAT → DWG 변환 옵션")
-        self.dlg.resizable(False, False)
+        self.dlg.resizable(False, True)
         self.dlg.grab_set()
         set_icon(self.dlg)
-        restore_geometry(self.dlg, "opt_geometry", "460x530")
+        restore_geometry(self.dlg, "opt_geometry_v2", "460x580")
+        self.dlg.minsize(460, 560)
         self.dlg.protocol("WM_DELETE_WINDOW", self._cancel)
         remove_minmax_buttons(self.dlg)
 
@@ -576,60 +606,96 @@ class OptionsDialog:
                        variable=self.include_subfolders_var).pack(anchor="w")
 
         # ── 3D 솔리드 색상 ──────────────────────────
-        xf = tk.LabelFrame(self.dlg, text=" 3D 솔리드 색상 ", font=("", 9, "bold"), padx=6, pady=3)
+        xf = tk.LabelFrame(self.dlg, text=" 3D 솔리드 색상 ", font=("", 9, "bold"), padx=6, pady=4)
         xf.pack(fill="x", **P)
 
-        self.use_color_var = tk.BooleanVar(value=False)
-        self.color_num_var = tk.IntVar(value=7)
+        self.use_color_var  = tk.BooleanVar(value=False)
+        self.color_mode_var = tk.StringVar(value="aci")   # "aci" or "rgb"
+        self.color_num_var  = tk.IntVar(value=7)
+        self._rgb_vals      = [tk.IntVar(value=255), tk.IntVar(value=0), tk.IntVar(value=0)]
 
-        tk.Checkbutton(xf, text="색상 변환 적용 (모든 3D 솔리드)",
+        # 활성화 체크 + 모드 라디오
+        top_row = tk.Frame(xf); top_row.pack(fill="x")
+        tk.Checkbutton(top_row, text="색상 변환 적용 (모든 3D 솔리드)",
                        variable=self.use_color_var,
-                       command=self._toggle_color).pack(anchor="w")
+                       command=self._toggle_color).pack(side="left")
+        tk.Radiobutton(top_row, text="ACI", variable=self.color_mode_var,
+                       value="aci", command=self._switch_color_mode).pack(side="left", padx=(12, 2))
+        tk.Radiobutton(top_row, text="트루컬러", variable=self.color_mode_var,
+                       value="rgb", command=self._switch_color_mode).pack(side="left")
 
-        color_row = tk.Frame(xf)
-        color_row.pack(fill="x", pady=(3, 1))
+        # ── ACI 패널 ──
+        self._aci_frame = tk.Frame(xf)
+        self._aci_frame.pack(fill="x", pady=(2, 0))
 
-        # 표준 색상 버튼 1–7
-        std_frame = tk.Frame(color_row)
-        std_frame.pack(side="left")
-        tk.Label(std_frame, text="표준색: ", font=("", 8)).pack(side="left")
+        # 표준 색상 버튼 1–9
+        std_row = tk.Frame(self._aci_frame); std_row.pack(anchor="w")
+        tk.Label(std_row, text="표준색:", font=("", 8)).pack(side="left")
         self._std_btns = []
-        for num, (hex_c, _name) in ACI_STANDARD.items():
-            if num > 7:
-                break
-            outline = "#000000" if num == 7 else hex_c
+        for num in range(1, 10):
+            hex_c, _ = ACI_STANDARD[num]
+            relief = "groove" if num == 7 else "raised"
             btn = tk.Button(
-                std_frame, bg=hex_c, width=2, height=1,
-                relief="raised", bd=1, cursor="hand2",
-                highlightbackground=outline,
-                command=lambda n=num: self._set_color(n),
+                std_row, bg=hex_c, width=2, height=1,
+                relief=relief, bd=2, cursor="hand2",
+                command=lambda n=num: self._set_aci_color(n),
             )
             btn.pack(side="left", padx=1)
             self._std_btns.append(btn)
 
-        # 색상 번호 스핀박스
-        tk.Label(color_row, text="  번호:", font=("", 8)).pack(side="left")
+        # 번호 스핀박스 + 미리보기
+        spin_row = tk.Frame(self._aci_frame); spin_row.pack(anchor="w", pady=(3, 0))
+        tk.Label(spin_row, text="번호 (1-255):", font=("", 8)).pack(side="left")
         self._color_spin = tk.Spinbox(
-            color_row, from_=1, to=255, textvariable=self.color_num_var,
-            width=4, command=self._update_color_preview,
+            spin_row, from_=1, to=255, textvariable=self.color_num_var,
+            width=5, command=self._update_aci_preview,
         )
-        self._color_spin.pack(side="left", padx=2)
-        self._color_spin.bind("<KeyRelease>", lambda e: self._update_color_preview())
+        self._color_spin.pack(side="left", padx=3)
+        self._color_spin.bind("<KeyRelease>", lambda e: self._update_aci_preview())
 
-        # 미리보기 스와치
-        self._swatch = tk.Canvas(color_row, width=22, height=18, bd=1, relief="sunken",
-                                  highlightthickness=0)
-        self._swatch.pack(side="left", padx=4)
-        self._swatch_rect = self._swatch.create_rectangle(0, 0, 22, 18, fill="#FFFFFF", outline="")
+        self._aci_swatch = tk.Canvas(spin_row, width=26, height=18, bd=1, relief="sunken",
+                                     highlightthickness=0)
+        self._aci_swatch.pack(side="left")
+        self._aci_swatch_rect = self._aci_swatch.create_rectangle(0, 0, 26, 18,
+                                                                    fill="#FFFFFF", outline="")
+        self._aci_name_var = tk.StringVar(value="")
+        tk.Label(spin_row, textvariable=self._aci_name_var,
+                 fg="gray", font=("", 8), width=12, anchor="w").pack(side="left", padx=4)
 
-        # 색상 이름 레이블
-        self._color_name_var = tk.StringVar(value="")
-        tk.Label(color_row, textvariable=self._color_name_var,
-                 fg="gray", font=("", 8)).pack(side="left")
+        # ── 트루컬러 패널 ──
+        self._rgb_frame = tk.Frame(xf)
+        # (pack은 _switch_color_mode에서 제어)
 
-        self._color_widgets = [self._color_spin] + self._std_btns
+        rgb_labels = ["R", "G", "B"]
+        rgb_defaults = [255, 0, 0]
+        self._rgb_spins = []
+        for i, (lbl, dv) in enumerate(zip(rgb_labels, rgb_defaults)):
+            self._rgb_vals[i].set(dv)
+            rr = tk.Frame(self._rgb_frame); rr.pack(side="left", padx=(0, 8))
+            tk.Label(rr, text=f"{lbl}:", font=("", 8)).pack(side="left")
+            sp = tk.Spinbox(rr, from_=0, to=255, textvariable=self._rgb_vals[i],
+                            width=4, command=self._update_rgb_preview)
+            sp.pack(side="left", padx=2)
+            sp.bind("<KeyRelease>", lambda e: self._update_rgb_preview())
+            self._rgb_spins.append(sp)
+
+        self._rgb_swatch = tk.Canvas(self._rgb_frame, width=26, height=18, bd=1,
+                                      relief="sunken", highlightthickness=0)
+        self._rgb_swatch.pack(side="left", padx=4)
+        self._rgb_swatch_rect = self._rgb_swatch.create_rectangle(0, 0, 26, 18,
+                                                                    fill="#FF0000", outline="")
+        tk.Button(self._rgb_frame, text="색상 선택...", font=("", 8),
+                  command=self._pick_rgb_color).pack(side="left", padx=4)
+
+        # 초기화
+        self._all_color_widgets = (
+            [self._color_spin, self._aci_swatch]
+            + self._std_btns + self._rgb_spins + [self._rgb_swatch]
+        )
         self._toggle_color()
-        self._update_color_preview()
+        self._switch_color_mode()
+        self._update_aci_preview()
+        self._update_rgb_preview()
 
         # ── DWG 버전 ─────────────────────────────
         vf = tk.LabelFrame(self.dlg, text=" DWG 저장 버전 ", font=("", 9, "bold"), padx=6, pady=3)
@@ -679,29 +745,68 @@ class OptionsDialog:
                   command=self._cancel).pack(side="left", padx=6)
 
     def _toggle_color(self):
-        state = "normal" if self.use_color_var.get() else "disabled"
-        self._color_spin.config(state=state)
-        for btn in self._std_btns:
-            btn.config(state=state)
+        """색상 변환 체크 여부에 따라 모든 색상 위젯 활성/비활성"""
+        enabled = self.use_color_var.get()
+        # 모드 라디오 버튼은 enabled 상태로만 동작; 서브 프레임 내 위젯 제어
+        for w in self._all_color_widgets:
+            try:
+                w.config(state="normal" if enabled else "disabled")
+            except tk.TclError:
+                pass
 
-    def _set_color(self, num):
+    def _switch_color_mode(self):
+        """ACI ↔ 트루컬러 패널 전환"""
+        if self.color_mode_var.get() == "aci":
+            self._rgb_frame.pack_forget()
+            self._aci_frame.pack(fill="x", pady=(2, 0))
+        else:
+            self._aci_frame.pack_forget()
+            self._rgb_frame.pack(fill="x", pady=(2, 0))
+
+    def _set_aci_color(self, num):
         self.color_num_var.set(num)
-        self._update_color_preview()
+        self._update_aci_preview()
 
-    def _update_color_preview(self):
+    def _update_aci_preview(self):
         try:
-            num = int(self.color_num_var.get())
-            num = max(1, min(255, num))
+            num = max(1, min(255, int(self.color_num_var.get())))
         except (ValueError, tk.TclError):
             return
         hex_c = aci_to_hex(num)
-        self._swatch.itemconfig(self._swatch_rect, fill=hex_c)
+        self._aci_swatch.itemconfig(self._aci_swatch_rect, fill=hex_c)
         if num in ACI_STANDARD:
-            self._color_name_var.set(ACI_STANDARD[num][1])
+            self._aci_name_var.set(ACI_STANDARD[num][1])
         elif 250 <= num <= 255:
-            self._color_name_var.set("회색 계열")
+            self._aci_name_var.set("회색 계열")
         else:
-            self._color_name_var.set(f"ACI {num}")
+            self._aci_name_var.set(f"ACI {num}")
+
+    def _update_rgb_preview(self):
+        try:
+            r = max(0, min(255, int(self._rgb_vals[0].get())))
+            g = max(0, min(255, int(self._rgb_vals[1].get())))
+            b = max(0, min(255, int(self._rgb_vals[2].get())))
+        except (ValueError, tk.TclError):
+            return
+        hex_c = f"#{r:02X}{g:02X}{b:02X}"
+        self._rgb_swatch.itemconfig(self._rgb_swatch_rect, fill=hex_c)
+
+    def _pick_rgb_color(self):
+        """tkinter 색상 선택 다이얼로그"""
+        try:
+            r = int(self._rgb_vals[0].get())
+            g = int(self._rgb_vals[1].get())
+            b = int(self._rgb_vals[2].get())
+        except (ValueError, tk.TclError):
+            r, g, b = 255, 0, 0
+        init_color = f"#{r:02X}{g:02X}{b:02X}"
+        result = colorchooser.askcolor(color=init_color, parent=self.dlg, title="트루컬러 선택")
+        if result and result[0]:
+            nr, ng, nb = (int(v) for v in result[0])
+            self._rgb_vals[0].set(nr)
+            self._rgb_vals[1].set(ng)
+            self._rgb_vals[2].set(nb)
+            self._update_rgb_preview()
 
     def _inc_workers(self):
         if self._workers_val < CPU_COUNT:
@@ -716,13 +821,23 @@ class OptionsDialog:
         self._workers_disp.set(str(self._workers_val))
 
     def _ok(self):
-        save_geometry(self.dlg, "opt_geometry")
-        solid_color = None
+        save_geometry(self.dlg, "opt_geometry_v2")
+        solid_color_aci = None
+        solid_color_rgb = None
         if self.use_color_var.get():
-            try:
-                solid_color = max(1, min(255, int(self.color_num_var.get())))
-            except (ValueError, tk.TclError):
-                solid_color = None
+            if self.color_mode_var.get() == "aci":
+                try:
+                    solid_color_aci = max(1, min(255, int(self.color_num_var.get())))
+                except (ValueError, tk.TclError):
+                    pass
+            else:
+                try:
+                    r = max(0, min(255, int(self._rgb_vals[0].get())))
+                    g = max(0, min(255, int(self._rgb_vals[1].get())))
+                    b = max(0, min(255, int(self._rgb_vals[2].get())))
+                    solid_color_rgb = (r, g, b)
+                except (ValueError, tk.TclError):
+                    pass
         self.result = {
             "scale":              self.scale_var.get(),
             "auto_layer":         self.auto_layer_var.get(),
@@ -732,12 +847,13 @@ class OptionsDialog:
             "workers":            self._workers_val,
             "timeout":            self.timeout_var.get(),
             "stop_on_error":      self.stop_on_error_var.get(),
-            "solid_color":        solid_color,
+            "solid_color_aci":    solid_color_aci,
+            "solid_color_rgb":    solid_color_rgb,
         }
         self.dlg.destroy()
 
     def _cancel(self):
-        save_geometry(self.dlg, "opt_geometry")
+        save_geometry(self.dlg, "opt_geometry_v2")
         self.dlg.destroy()
 
     def show(self):
