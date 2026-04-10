@@ -29,10 +29,10 @@ ACCORECONSOLE_CANDIDATES = [
     r"C:\Program Files\Autodesk\AutoCAD 2020\accoreconsole.exe",
 ]
 
-SCALE_OPTIONS_TOP    = ["AA (1:1)", "BB (1:100)"]
+SCALE_OPTIONS_TOP    = ["AA (1:1)", "BB (1:1000)"]
 SCALE_OPTIONS_BOTTOM = ["1:1", "1:10", "1:100", "1:1000"]
 SCALE_FACTOR_MAP = {
-    "AA (1:1)": 1, "BB (1:100)": 100,
+    "AA (1:1)": 1, "BB (1:1000)": 1000,
     "1:1": 1, "1:10": 10, "1:100": 100, "1:1000": 1000,
 }
 DWG_VERSIONS = ["2018", "2013", "2010", "2007", "2004", "2000", "R14"]
@@ -561,9 +561,9 @@ class OptionsDialog:
         xf = tk.LabelFrame(self.dlg, text=" 3D 솔리드 색상 ", font=("", 9, "bold"), padx=6, pady=4)
         xf.pack(fill="x", **P)
 
-        self.use_color_var  = tk.BooleanVar(value=False)
+        self.use_color_var  = tk.BooleanVar(value=True)
         self.color_mode_var = tk.StringVar(value="aci")   # "aci" or "rgb"
-        self.color_num_var  = tk.IntVar(value=7)
+        self.color_num_var  = tk.IntVar(value=60)
         self._rgb_vals      = [tk.IntVar(value=255), tk.IntVar(value=0), tk.IntVar(value=0)]
 
         # 활성화 체크 + 모드 라디오
@@ -580,7 +580,7 @@ class OptionsDialog:
         self._aci_frame = tk.Frame(xf)
         self._aci_frame.pack(fill="x", pady=(2, 0))
 
-        # 표준 색상 버튼 1–9
+        # 표준 색상 버튼 1–9 + 구분 후 60번
         std_row = tk.Frame(self._aci_frame); std_row.pack(anchor="w")
         tk.Label(std_row, text="표준색:", font=("", 8)).pack(side="left")
         self._std_btns = []
@@ -594,6 +594,17 @@ class OptionsDialog:
             )
             btn.pack(side="left", padx=1)
             self._std_btns.append(btn)
+        # 구분선 + 60번 버튼
+        tk.Frame(std_row, width=1, bg="#aaaaaa").pack(side="left", fill="y", padx=(6, 5))
+        hex_60 = aci_to_hex(60)
+        btn60 = tk.Button(
+            std_row, bg=hex_60, width=2, height=1,
+            relief="raised", bd=2, cursor="hand2",
+            command=lambda: self._set_aci_color(60),
+        )
+        btn60.pack(side="left", padx=1)
+        tk.Label(std_row, text="60", font=("", 7), fg="gray").pack(side="left", padx=(1, 0))
+        self._std_btns.append(btn60)
 
         # 번호 스핀박스 + 미리보기
         spin_row = tk.Frame(self._aci_frame); spin_row.pack(anchor="w", pady=(3, 0))
