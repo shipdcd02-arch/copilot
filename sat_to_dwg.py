@@ -242,28 +242,27 @@ class AutoCADResaver:
             proc     = None
             try:
                 # AutoCAD 스크립트 파일 생성
+                # ※ acad.exe .scr에서는 _SAVEAS 아닌 -SAVEAS 사용
                 scr_content = "\n".join([
                     "FILEDIA", "0",
                     "ISAVEBAK", "0",
-                    "_SAVEAS", self._dwg_ver, f'"{final_path}"', "",
+                    "-SAVEAS", self._dwg_ver, f'"{final_path}"', "",
                     "QUIT", "Y", "",
                 ])
                 fd, scr_path = tempfile.mkstemp(suffix=".scr")
                 with os.fdopen(fd, "w", encoding="cp949", errors="replace") as f:
                     f.write(scr_content)
 
-                # acad.exe 실행 (클린 프로파일 → LISP/플러그인 로드 생략)
+                # acad.exe 실행 — 최소화 상태로 시작 (다이얼로그는 건드리지 않음)
                 si = subprocess.STARTUPINFO()
                 si.dwFlags     = subprocess.STARTF_USESHOWWINDOW
-                si.wShowWindow = 0   # SW_HIDE: 처음부터 숨김 시도
+                si.wShowWindow = 7   # SW_SHOWMINNOACTIVE
 
                 proc = subprocess.Popen(
                     [
                         self._acad_path,
                         "/nologo",
-                        "/nohardware",
-                        "/nossm",                        # Sheet Set Manager 생략
-                        "/p", "<<AutoCAD Defaults>>",   # 클린 프로파일 (LISP 미로드)
+                        "/nossm",      # Sheet Set Manager 생략
                         temp_path,
                         "/b", scr_path,
                     ],
@@ -271,12 +270,12 @@ class AutoCADResaver:
                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
                 )
 
-                # 창 숨김 폴링 스레드 (SW_HIDE가 무시되는 경우 대비)
+                # 메인 프레임만 숨김 (다이얼로그 제외 → 메시지 큐 차단 방지)
                 _hide_stop = threading.Event()
                 def _hide_loop(pid=proc.pid):
                     while not _hide_stop.is_set():
-                        _hide_pid_windows(pid)
-                        time.sleep(0.3)
+                        _hide_acad_main(pid)
+                        time.sleep(0.5)
                 threading.Thread(target=_hide_loop, daemon=True).start()
 
                 try:
@@ -357,15 +356,26 @@ def _try_remove(path):
     except Exception:
         pass
 
-def _hide_pid_windows(pid):
-    """지정 PID 프로세스의 모든 최상위 창을 숨긴다 (SW_HIDE)."""
+def _hide_acad_main(pid):
+    """AutoCAD 메인 프레임 창만 숨긴다.
+    팝업·다이얼로그는 건드리지 않아 메시지 큐 차단을 방지한다."""
     user32 = ctypes.windll.user32
+    cls_buf = ctypes.create_unicode_buffer(256)
 
     @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_long)
     def _cb(hwnd, _):
         proc_id = ctypes.c_ulong(0)
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(proc_id))
-        if proc_id.value == pid:
+        if proc_id.value != pid:
+            return True
+        # 팝업(WS_POPUP=0x80000000)은 건너뜀 → 다이얼로그 차단 방지
+        style = user32.GetWindowLongW(hwnd, -16)  # GWL_STYLE
+        if style & 0x80000000:
+            return True
+        # AutoCAD 메인 프레임 클래스만 숨김
+        user32.GetClassNameW(hwnd, cls_buf, 256)
+        cls = cls_buf.value
+        if cls.startswith("Afx") or "AutoCAD" in cls or cls == "MsoCommandBar":
             user32.ShowWindow(hwnd, 0)  # SW_HIDE
         return True
 
