@@ -320,28 +320,42 @@ def convert_single(accoreconsole_path, sat_path, base_folder, log_queue, options
         log_queue.put(("skip", f"[건너뜀]  {display}.dwg"))
         return "skip"
 
-    script = build_script(sat_path, dwg_path, options)
-
+    tmp_dir = tempfile.mkdtemp()
+    tmp_dwg_path = os.path.join(tmp_dir, base_name + ".dwg")
     try:
-        subprocess.run(
-            [accoreconsole_path, "/nologo", "/nohardware", "/p", "<<AutoCAD Defaults>>"],
-            input=script.encode("cp949", errors="replace"),
-            capture_output=True,
-            timeout=options.get("timeout", 60),
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        if os.path.exists(dwg_path):
-            log_queue.put(("ok", f"[완료]    {display}.dwg"))
-            return "ok"
-        else:
-            log_queue.put(("err", f"[실패]    {display}.sat  —  DWG 파일 미생성"))
+        script = build_script(sat_path, tmp_dwg_path, options)
+
+        try:
+            subprocess.run(
+                [accoreconsole_path, "/nologo", "/nohardware", "/p", "<<AutoCAD Defaults>>"],
+                input=script.encode("cp949", errors="replace"),
+                capture_output=True,
+                timeout=options.get("timeout", 60),
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            if os.path.exists(tmp_dwg_path):
+                with open(tmp_dwg_path, "rb") as f:
+                    dwg_data = f.read()
+                with open(dwg_path, "wb") as f:
+                    f.write(dwg_data)
+                log_queue.put(("ok", f"[완료]    {display}.dwg"))
+                return "ok"
+            else:
+                log_queue.put(("err", f"[실패]    {display}.sat  —  DWG 파일 미생성"))
+                return "err"
+        except subprocess.TimeoutExpired:
+            log_queue.put(("err", f"[시간초과]  {display}.sat  ({options.get('timeout', 60)}초 초과)"))
             return "err"
-    except subprocess.TimeoutExpired:
-        log_queue.put(("err", f"[시간초과]  {display}.sat  ({options.get('timeout', 60)}초 초과)"))
-        return "err"
-    except Exception as e:
-        log_queue.put(("err", f"[오류]    {display}.sat  —  {e}"))
-        return "err"
+        except Exception as e:
+            log_queue.put(("err", f"[오류]    {display}.sat  —  {e}"))
+            return "err"
+    finally:
+        try:
+            if os.path.exists(tmp_dwg_path):
+                os.remove(tmp_dwg_path)
+            os.rmdir(tmp_dir)
+        except Exception:
+            pass
 
 
 # ──────────────────────────────────────────────
