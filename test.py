@@ -1,25 +1,23 @@
-import os
-import sys
-import winreg
+# 레이어 생성 시 색상까지 같이 설정
+if use_layer:
+    lines += ["-LAYER", "M", layer_name, ""]
+    if has_color:
+        if solid_color_aci is not None:
+            lines += ["-LAYER", "C", str(solid_color_aci), layer_name, ""]
+        elif solid_color_rgb is not None:
+            r, g, b = solid_color_rgb
+            lines += ["-LAYER", "C", "T", f"{r},{g},{b}", layer_name, ""]
 
-def resolve(path):
-    path = os.path.abspath(path).lower()
-    if path.startswith('\\\\'):
-        return path
-    drive, tail = os.path.splitdrive(path)
-    if not drive:
-        return path
-    try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, f'Network\\{drive[0]}')
-        unc, _ = winreg.QueryValueEx(key, 'RemotePath')
-        return (unc + tail).lower()
-    except Exception:
-        return path  # 로컬 드라이브면 그대로
+lines.append(f'_ACISIN "{sat_path}"')
 
-ALLOWED = [resolve(p) for p in [
-    r'C:\MyApp',
-    r'\\fileserver\share\projects\app',
-]]
+# 레이어 이동만 (색상은 레이어에 설정했으므로 개체 색상 변경 불필요)
+if use_layer:
+    lines += ["_CHPROP", "_all", "", "LA", layer_name, ""]
+elif has_color and not use_layer:
+    # 레이어 없이 색상만 적용하는 경우는 기존 방식 유지
+    lines += ["_CHPROP", "_all", ""] + _color_args() + [""]
 
-if not any(resolve(os.path.dirname(os.path.abspath(sys.argv[0]))).startswith(p) for p in ALLOWED):
-    sys.exit("허용되지 않은 경로입니다.")
+
+# 저장 전 현재 레이어를 0으로 복원
+lines += ["CLAYER", "0"]
+lines += ["_SAVEAS", dwg_version, f'"{dwg_path}"', "_QUIT Y", ""]
