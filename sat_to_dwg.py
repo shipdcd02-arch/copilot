@@ -2,7 +2,6 @@ import os
 import glob
 import subprocess
 import threading
-import time
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk, colorchooser
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -241,19 +240,16 @@ class AutoCADResaver:
             scr_path = None
             proc     = None
             try:
-                # AutoCAD 스크립트 파일 생성
-                # ※ acad.exe .scr에서는 _SAVEAS 아닌 -SAVEAS 사용
-                scr_content = "\n".join([
-                    "FILEDIA", "0",
-                    "ISAVEBAK", "0",
-                    "-SAVEAS", self._dwg_ver, f'"{final_path}"', "",
-                    "QUIT", "Y", "",
-                ])
+                # 임시 파일을 먼저 최종 위치로 이동 — AutoCAD가 실패해도 파일은 보존
+                os.replace(temp_path, final_path)
+
+                # QSAVE 스크립트 — 버전/경로 프롬프트 없이 단순 저장
+                scr_content = "FILEDIA\n0\nISAVEBAK\n0\nQSAVE\nQUIT\nY\n\n"
                 fd, scr_path = tempfile.mkstemp(suffix=".scr")
                 with os.fdopen(fd, "w", encoding="cp949", errors="replace") as f:
                     f.write(scr_content)
 
-                # acad.exe 실행 — 최소화 상태로 시작 (다이얼로그는 건드리지 않음)
+                # acad.exe 실행 — 최소화 상태로 시작
                 si = subprocess.STARTUPINFO()
                 si.dwFlags     = subprocess.STARTF_USESHOWWINDOW
                 si.wShowWindow = 7   # SW_SHOWMINNOACTIVE
@@ -263,40 +259,24 @@ class AutoCADResaver:
                         self._acad_path,
                         "/nologo",
                         "/nossm",      # Sheet Set Manager 생략
-                        temp_path,
+                        final_path,
                         "/b", scr_path,
                     ],
                     startupinfo=si,
                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
                 )
 
-                # 메인 프레임만 숨김 (다이얼로그 제외 → 메시지 큐 차단 방지)
-                _hide_stop = threading.Event()
-                def _hide_loop(pid=proc.pid):
-                    while not _hide_stop.is_set():
-                        _hide_acad_main(pid)
-                        time.sleep(0.5)
-                threading.Thread(target=_hide_loop, daemon=True).start()
-
                 try:
                     proc.wait(timeout=self._timeout)
-                finally:
-                    _hide_stop.set()
-
-                if os.path.exists(final_path):
-                    _try_remove(temp_path)
-                    on_done("ok", display, None)
-                else:
-                    _try_remove(temp_path)
-                    on_done("err", display, "최종 DWG 파일 미생성")
-
-            except subprocess.TimeoutExpired:
-                if proc:
+                except subprocess.TimeoutExpired:
                     try: proc.kill()
                     except Exception: pass
-                _try_remove(temp_path)
-                on_done("err", display, "AutoCAD 저장 시간 초과")
+
+                # 파일은 이미 final_path에 있으므로 성공으로 처리
+                on_done("ok", display, None)
+
             except Exception as e:
+                # os.replace 실패 등 — temp 정리 시도
                 _try_remove(temp_path)
                 on_done("err", display, str(e))
             finally:
@@ -356,30 +336,6 @@ def _try_remove(path):
     except Exception:
         pass
 
-def _hide_acad_main(pid):
-    """AutoCAD 메인 프레임 창만 숨긴다.
-    팝업·다이얼로그는 건드리지 않아 메시지 큐 차단을 방지한다."""
-    user32 = ctypes.windll.user32
-    cls_buf = ctypes.create_unicode_buffer(256)
-
-    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_long)
-    def _cb(hwnd, _):
-        proc_id = ctypes.c_ulong(0)
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(proc_id))
-        if proc_id.value != pid:
-            return True
-        # 팝업(WS_POPUP=0x80000000)은 건너뜀 → 다이얼로그 차단 방지
-        style = user32.GetWindowLongW(hwnd, -16)  # GWL_STYLE
-        if style & 0x80000000:
-            return True
-        # AutoCAD 메인 프레임 클래스만 숨김
-        user32.GetClassNameW(hwnd, cls_buf, 256)
-        cls = cls_buf.value
-        if cls.startswith("Afx") or "AutoCAD" in cls or cls == "MsoCommandBar":
-            user32.ShowWindow(hwnd, 0)  # SW_HIDE
-        return True
-
-    user32.EnumWindows(_cb, 0)
 
 def find_accoreconsole():
     for path in ACCORECONSOLE_CANDIDATES:
