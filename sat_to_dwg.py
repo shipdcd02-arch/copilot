@@ -2,6 +2,7 @@ import os
 import glob
 import subprocess
 import threading
+import time
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk, colorchooser
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -27,6 +28,19 @@ ACCORECONSOLE_CANDIDATES = [
     r"C:\Program Files\Autodesk\AutoCAD 2022\accoreconsole.exe",
     r"C:\Program Files\Autodesk\AutoCAD 2021\accoreconsole.exe",
     r"C:\Program Files\Autodesk\AutoCAD 2020\accoreconsole.exe",
+]
+
+ACAD_CANDIDATES = [
+    r"C:\Program Files\Autodesk\AutoCAD 2026\acad.exe",
+    r"C:\Program Files\Autodesk\AutoCAD 2025\acad.exe",
+    r"C:\Program Files\Autodesk\AutoCAD 2024\acad.exe",
+    r"C:\Program Files\Autodesk\AutoCAD 2023\acad.exe",
+    r"C:\Program Files\Autodesk\AutoCAD 2022\acad.exe",
+    r"C:\Program Files\Autodesk\AutoCAD 2021\acad.exe",
+    r"C:\Program Files\Autodesk\AutoCAD 2020\acad.exe",
+    r"C:\Program Files\Autodesk\AutoCAD 2018\acad.exe",
+    r"C:\Program Files\Autodesk\AutoCAD 2018 - Korean\acad.exe",
+    r"C:\Program Files (x86)\Autodesk\AutoCAD 2018\acad.exe",
 ]
 
 SCALE_OPTIONS_TOP    = ["AA (1:1)", "BB (1:1000)"]
@@ -203,72 +217,99 @@ def remove_minmax_buttons(win):
 
 
 # ──────────────────────────────────────────────
-# AutoCAD COM 재저장 워커
+# AutoCAD 재저장 워커 (subprocess 방식)
 # ──────────────────────────────────────────────
 class AutoCADResaver:
-    """AutoCAD COM 인스턴스를 N개 띄워 DWG를 병렬로 재저장한다.
-    accoreconsole 스레드와 병행 시작해 초기화 시간을 숨긴다."""
+    """acad.exe를 별도 프로세스로 실행해 DWG를 재저장한다.
+    기존 AutoCAD 세션과 완전히 분리된 독립 프로세스로 동작한다."""
 
-    def __init__(self, log_queue):
-        self.log_queue = log_queue
-        self._q        = queue.Queue()
-        self._thread   = threading.Thread(target=self._worker, daemon=True)
+    def __init__(self, log_queue, acad_path, dwg_version, timeout):
+        self.log_queue  = log_queue
+        self._acad_path = acad_path
+        self._dwg_ver   = dwg_version
+        self._timeout   = timeout + 60   # acad.exe 기동 시간 여유
+        self._q         = queue.Queue()
+        self._thread    = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
 
-    @staticmethod
-    def _suppress(acad):
-        try: acad.Visible = False
-        except Exception: pass
-        try: acad.WindowState = 1   # acMinimized
-        except Exception: pass
-
     def _worker(self):
-        acad = None
-        try:
-            import win32com.client
-            # DispatchEx → 항상 새 인스턴스 생성 (기존 세션과 분리)
-            acad = win32com.client.DispatchEx("AutoCAD.Application")
-            self._suppress(acad)
-        except Exception as e:
-            self.log_queue.put(("err", f"[AutoCAD] 인스턴스 시작 실패: {e}"))
-
         while True:
             item = self._q.get()
             if item is None:
-                # 종료 신호 → 우리가 만든 인스턴스만 Quit
-                # (pre_existing이면 DispatchEx로 새로 만든 것이므로 항상 종료)
-                if acad:
-                    try:
-                        acad.Quit()
-                    except Exception:
-                        pass
                 break
-
             temp_path, final_path, display, on_done = item
-            if acad is None:
-                on_done("err", display, "AutoCAD 인스턴스 없음")
-                continue
+            scr_path = None
+            proc     = None
             try:
-                doc = acad.Documents.Open(temp_path)
-                self._suppress(acad)             # 열릴 때 창이 뜨면 재숨김
-                doc.SetVariable("ISAVEBAK", 0)   # .bak 생성 억제
-                doc.SetVariable("FILEDIA", 0)    # 저장 다이얼로그 억제
-                doc.SaveAs(final_path)           # 원본 폴더에 최종 저장
-                doc.SetVariable("FILEDIA", 1)
-                doc.Close(False)
+                # AutoCAD 스크립트 파일 생성
+                scr_content = "\n".join([
+                    "FILEDIA", "0",
+                    "ISAVEBAK", "0",
+                    "_SAVEAS", self._dwg_ver, f'"{final_path}"', "",
+                    "QUIT", "Y", "",
+                ])
+                fd, scr_path = tempfile.mkstemp(suffix=".scr")
+                with os.fdopen(fd, "w", encoding="cp949", errors="replace") as f:
+                    f.write(scr_content)
+
+                # acad.exe 실행 (클린 프로파일 → LISP/플러그인 로드 생략)
+                si = subprocess.STARTUPINFO()
+                si.dwFlags     = subprocess.STARTF_USESHOWWINDOW
+                si.wShowWindow = 0   # SW_HIDE: 처음부터 숨김 시도
+
+                proc = subprocess.Popen(
+                    [
+                        self._acad_path,
+                        "/nologo",
+                        "/nohardware",
+                        "/nossm",                        # Sheet Set Manager 생략
+                        "/p", "<<AutoCAD Defaults>>",   # 클린 프로파일 (LISP 미로드)
+                        temp_path,
+                        "/b", scr_path,
+                    ],
+                    startupinfo=si,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                )
+
+                # 창 숨김 폴링 스레드 (SW_HIDE가 무시되는 경우 대비)
+                _hide_stop = threading.Event()
+                def _hide_loop(pid=proc.pid):
+                    while not _hide_stop.is_set():
+                        _hide_pid_windows(pid)
+                        time.sleep(0.3)
+                threading.Thread(target=_hide_loop, daemon=True).start()
+
+                try:
+                    proc.wait(timeout=self._timeout)
+                finally:
+                    _hide_stop.set()
+
+                if os.path.exists(final_path):
+                    _try_remove(temp_path)
+                    on_done("ok", display, None)
+                else:
+                    _try_remove(temp_path)
+                    on_done("err", display, "최종 DWG 파일 미생성")
+
+            except subprocess.TimeoutExpired:
+                if proc:
+                    try: proc.kill()
+                    except Exception: pass
                 _try_remove(temp_path)
-                on_done("ok", display, None)
+                on_done("err", display, "AutoCAD 저장 시간 초과")
             except Exception as e:
                 _try_remove(temp_path)
                 on_done("err", display, str(e))
+            finally:
+                if scr_path:
+                    _try_remove(scr_path)
 
     def submit(self, temp_path, final_path, display, on_done):
         self._q.put((temp_path, final_path, display, on_done))
 
     def stop(self):
-        """워커에 종료 신호 전송 후 완료 대기"""
         self._q.put(None)
-        self._thread.join(timeout=30)
+        self._thread.join(timeout=10)
 
 
 class _PipelineCoord:
@@ -316,8 +357,28 @@ def _try_remove(path):
     except Exception:
         pass
 
+def _hide_pid_windows(pid):
+    """지정 PID 프로세스의 모든 최상위 창을 숨긴다 (SW_HIDE)."""
+    user32 = ctypes.windll.user32
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_long)
+    def _cb(hwnd, _):
+        proc_id = ctypes.c_ulong(0)
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(proc_id))
+        if proc_id.value == pid:
+            user32.ShowWindow(hwnd, 0)  # SW_HIDE
+        return True
+
+    user32.EnumWindows(_cb, 0)
+
 def find_accoreconsole():
     for path in ACCORECONSOLE_CANDIDATES:
+        if os.path.exists(path):
+            return path
+    return None
+
+def find_acad():
+    for path in ACAD_CANDIDATES:
         if os.path.exists(path):
             return path
     return None
@@ -601,7 +662,7 @@ class LogWindow:
 # ──────────────────────────────────────────────
 # 변환 스레드
 # ──────────────────────────────────────────────
-def run_conversion(accoreconsole_path, sat_files, base_folder, log_win, options):
+def run_conversion(accoreconsole_path, acad_path, sat_files, base_folder, log_win, options):
     workers    = min(options["workers"], len(sat_files))
     stop_event = threading.Event()
 
@@ -611,12 +672,16 @@ def run_conversion(accoreconsole_path, sat_files, base_folder, log_win, options)
         f"   /   파일 {len(sat_files)}개   /   동시 처리 {workers}코어\n"
     ))
 
-    # ── AutoCAD 재저장 워커를 accoreconsole과 동시에 시작 (초기화 시간 숨김)
-    resaver = AutoCADResaver(log_win.log_queue)
+    # ── AutoCAD 재저장 워커 시작 (subprocess, 기존 세션과 분리)
+    resaver = AutoCADResaver(
+        log_win.log_queue,
+        acad_path=acad_path,
+        dwg_version=options["dwg_version"],
+        timeout=options.get("timeout", 60),
+    )
 
     def _finish_cb():
         log_win.root.after(0, log_win.finish)
-        # 모든 작업 완료 후 AutoCAD 인스턴스 종료 (백그라운드 스레드에서)
         threading.Thread(target=resaver.stop, daemon=True).start()
 
     coord = _PipelineCoord(log_win.log_queue, finish_cb=_finish_cb)
@@ -986,6 +1051,17 @@ def main():
         root_hidden.destroy()
         return
 
+    acad_path = find_acad()
+    if not acad_path:
+        messagebox.showerror(
+            "acad.exe 없음",
+            "acad.exe를 찾을 수 없습니다.\n"
+            "sat_to_dwg.py 상단 ACAD_CANDIDATES 목록에\n"
+            "설치된 경로를 직접 추가해 주세요."
+        )
+        root_hidden.destroy()
+        return
+
     # 3) 폴더 선택
     from tkinter import filedialog
     folder = filedialog.askdirectory(
@@ -1016,7 +1092,7 @@ def main():
 
     threading.Thread(
         target=run_conversion,
-        args=(accoreconsole_path, sat_files, folder, log_win, options),
+        args=(accoreconsole_path, acad_path, sat_files, folder, log_win, options),
         daemon=True,
     ).start()
 
