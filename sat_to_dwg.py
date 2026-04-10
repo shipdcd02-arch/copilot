@@ -206,54 +206,68 @@ def remove_minmax_buttons(win):
 # AutoCAD COM 재저장 워커
 # ──────────────────────────────────────────────
 class AutoCADResaver:
-    """AutoCAD COM으로 DWG를 열고 최종 경로에 저장한다.
+    """AutoCAD COM 인스턴스를 N개 띄워 DWG를 병렬로 재저장한다.
     accoreconsole 스레드와 병행 시작해 초기화 시간을 숨긴다."""
 
-    def __init__(self, log_queue):
-        self.log_queue  = log_queue
-        self._q         = queue.Queue()
-        self._acad      = None
-        self._available = False
-        self._thread    = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
+    def __init__(self, log_queue, count=2):
+        self.log_queue     = log_queue
+        self._count        = count
+        self._q            = queue.Queue()
+        self._threads      = []
+        self._pre_existing = False   # 실행 전 AutoCAD가 이미 열려 있었는지
 
-    def _suppress(self):
-        """AutoCAD 창/팔레트 숨김"""
-        try:
-            self._acad.Visible = False
-        except Exception:
-            pass
-        try:
-            self._acad.WindowState = 1   # acMinimized = 1
-        except Exception:
-            pass
-
-    def _run(self):
+        # 미리 AutoCAD 실행 여부 확인 (종료 여부 결정에 사용)
         try:
             import win32com.client
-            self._acad = win32com.client.Dispatch("AutoCAD.Application")
-            self._suppress()
-            self._available = True
-        except ImportError:
-            self.log_queue.put(("err",
-                "[AutoCAD] pywin32 미설치 — 'pip install pywin32' 후 재시도"))
+            win32com.client.GetActiveObject("AutoCAD.Application")
+            self._pre_existing = True
+        except Exception:
+            pass
+
+        for _ in range(count):
+            t = threading.Thread(target=self._worker, daemon=True)
+            t.start()
+            self._threads.append(t)
+
+    @staticmethod
+    def _suppress(acad):
+        try: acad.Visible = False
+        except Exception: pass
+        try: acad.WindowState = 1   # acMinimized
+        except Exception: pass
+
+    def _worker(self):
+        acad = None
+        try:
+            import win32com.client
+            # DispatchEx → 항상 새 인스턴스 생성 (기존 세션과 분리)
+            acad = win32com.client.DispatchEx("AutoCAD.Application")
+            self._suppress(acad)
         except Exception as e:
-            self.log_queue.put(("err", f"[AutoCAD] 시작 실패: {e}"))
+            self.log_queue.put(("err", f"[AutoCAD] 인스턴스 시작 실패: {e}"))
 
         while True:
             item = self._q.get()
             if item is None:
+                # 종료 신호 → 우리가 만든 인스턴스만 Quit
+                # (pre_existing이면 DispatchEx로 새로 만든 것이므로 항상 종료)
+                if acad:
+                    try:
+                        acad.Quit()
+                    except Exception:
+                        pass
                 break
+
             temp_path, final_path, display, on_done = item
-            if not self._available:
-                on_done("err", display, "AutoCAD 사용 불가")
+            if acad is None:
+                on_done("err", display, "AutoCAD 인스턴스 없음")
                 continue
             try:
-                doc = self._acad.Documents.Open(temp_path)
-                self._suppress()                     # 열릴 때 창이 뜨면 재숨김
-                doc.SetVariable("ISAVEBAK", 0)       # .bak 생성 억제
-                doc.SetVariable("FILEDIA", 0)        # 저장 다이얼로그 억제
-                doc.SaveAs(final_path)               # 원본 폴더에 최종 저장
+                doc = acad.Documents.Open(temp_path)
+                self._suppress(acad)             # 열릴 때 창이 뜨면 재숨김
+                doc.SetVariable("ISAVEBAK", 0)   # .bak 생성 억제
+                doc.SetVariable("FILEDIA", 0)    # 저장 다이얼로그 억제
+                doc.SaveAs(final_path)           # 원본 폴더에 최종 저장
                 doc.SetVariable("FILEDIA", 1)
                 doc.Close(False)
                 _try_remove(temp_path)
@@ -266,13 +280,11 @@ class AutoCADResaver:
         self._q.put((temp_path, final_path, display, on_done))
 
     def stop(self):
-        self._q.put(None)
-        self._thread.join(timeout=30)
-        if self._acad:
-            try:
-                self._acad.Quit()
-            except Exception:
-                pass
+        """각 워커에 종료 신호 전송 후 완료 대기"""
+        for _ in range(self._count):
+            self._q.put(None)
+        for t in self._threads:
+            t.join(timeout=30)
 
 
 class _PipelineCoord:
@@ -609,19 +621,24 @@ def run_conversion(accoreconsole_path, sat_files, base_folder, log_win, options)
     workers    = min(options["workers"], len(sat_files))
     stop_event = threading.Event()
 
+    acad_count = options.get("acad_instances", 2)
+
     log_win.log_queue.put((
         "info",
         f"스케일 : {options['scale']}   /   DWG 버전 : {options['dwg_version']}"
-        f"   /   파일 {len(sat_files)}개   /   동시 처리 {workers}코어\n"
+        f"   /   파일 {len(sat_files)}개   /   동시 처리 {workers}코어"
+        f"   /   AutoCAD {acad_count}개\n"
     ))
 
     # ── AutoCAD 재저장 워커를 accoreconsole과 동시에 시작 (초기화 시간 숨김)
-    resaver = AutoCADResaver(log_win.log_queue)
+    resaver = AutoCADResaver(log_win.log_queue, count=acad_count)
 
-    coord = _PipelineCoord(
-        log_win.log_queue,
-        finish_cb=lambda: log_win.root.after(0, log_win.finish),
-    )
+    def _finish_cb():
+        log_win.root.after(0, log_win.finish)
+        # 모든 작업 완료 후 AutoCAD 인스턴스 종료 (백그라운드 스레드에서)
+        threading.Thread(target=resaver.stop, daemon=True).start()
+
+    coord = _PipelineCoord(log_win.log_queue, finish_cb=_finish_cb)
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
@@ -810,6 +827,15 @@ class OptionsDialog:
         af = tk.LabelFrame(self.dlg, text=" 고급 옵션 ", font=("", 9, "bold"), padx=6, pady=3)
         af.pack(fill="x", **P)
 
+        # AutoCAD 인스턴스 수
+        ra = tk.Frame(af); ra.pack(fill="x", pady=2)
+        tk.Label(ra, text="AutoCAD 인스턴스 수:").pack(side="left")
+        self.acad_instances_var = tk.IntVar(value=2)
+        tk.Spinbox(ra, from_=1, to=4, textvariable=self.acad_instances_var,
+                   width=3).pack(side="left", padx=3)
+        tk.Label(ra, text="(많을수록 재저장 빠름, 메모리 주의)",
+                 fg="gray", font=("", 8)).pack(side="left", padx=4)
+
         # 코어 수 — 일반 Label + ▲▼ 버튼
         r1 = tk.Frame(af); r1.pack(fill="x", pady=2)
         tk.Label(r1, text="동시 처리 코어 수:").pack(side="left")
@@ -945,6 +971,7 @@ class OptionsDialog:
             "include_subfolders": self.include_subfolders_var.get(),
             "dwg_version":        self.dwg_version_var.get(),
             "workers":            self._workers_val,
+            "acad_instances":     max(1, min(4, self.acad_instances_var.get())),
             "timeout":            self.timeout_var.get(),
             "stop_on_error":      self.stop_on_error_var.get(),
             "solid_color_aci":    solid_color_aci,
