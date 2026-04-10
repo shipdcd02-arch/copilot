@@ -54,12 +54,6 @@ CPU_COUNT = os.cpu_count() or 2
 REG_PATH  = r"Software\SHI_AI\SAT2DWG"
 _ICO_PATH = os.path.join(tempfile.gettempdir(), "sat2dwg_v2.ico")
 
-# ──────────────────────────────────────────────
-# FASOO 암호화 설정
-# ──────────────────────────────────────────────
-FASOO_DLL_PATH = r"C:\Program Files\Fasoo\FED\FasooSDK.dll"  # ← 실제 DLL 경로로 수정
-FASOO_POLICY_ID = "YOUR_POLICY_ID"                            # ← 실제 Policy ID로 수정
-
 
 # ──────────────────────────────────────────────
 # 레지스트리 위치 저장/복원
@@ -207,43 +201,6 @@ def remove_minmax_buttons(win):
     win.after(10, _apply)
 
 
-# ──────────────────────────────────────────────
-# FASOO 암호화
-# ──────────────────────────────────────────────
-_fasoo_dll = None
-_fasoo_dll_error = None
-
-def _load_fasoo_dll():
-    global _fasoo_dll, _fasoo_dll_error
-    if _fasoo_dll is not None or _fasoo_dll_error is not None:
-        return _fasoo_dll
-    try:
-        _fasoo_dll = ctypes.CDLL(FASOO_DLL_PATH)
-        # 반환값 타입 지정 (int: 0=성공, 그 외=오류코드)
-        _fasoo_dll.FasooEncryptFile.restype  = ctypes.c_int
-        _fasoo_dll.FasooEncryptFile.argtypes = [
-            ctypes.c_wchar_p,  # 원본 파일 경로
-            ctypes.c_wchar_p,  # 출력 파일 경로 (None이면 원본 덮어쓰기)
-            ctypes.c_wchar_p,  # Policy ID
-        ]
-    except OSError as e:
-        _fasoo_dll_error = str(e)
-        _fasoo_dll = None
-    return _fasoo_dll
-
-def fasoo_encrypt_file(dwg_path):
-    """DWG 파일을 FASOO SDK로 암호화한다. 성공 시 True, 실패 시 오류 메시지 반환."""
-    dll = _load_fasoo_dll()
-    if dll is None:
-        return f"FASOO DLL 로드 실패: {_fasoo_dll_error}"
-    try:
-        ret = dll.FasooEncryptFile(dwg_path, None, FASOO_POLICY_ID)
-        if ret == 0:
-            return True
-        return f"FASOO 암호화 오류 코드: {ret}"
-    except Exception as e:
-        return f"FASOO 암호화 예외: {e}"
-
 
 # ──────────────────────────────────────────────
 # 유틸
@@ -331,9 +288,9 @@ def build_script(sat_path, dwg_path, options):
     if scale_factor != 1:
         lines += ["_SCALE", "_all", "", "0,0,0", str(scale_factor)]
 
-    # 모든 수정 완료 후 레이어 잠금
+    # 모든 수정 완료 후 레이어 잠금 (LOck)
     if use_layer:
-        lines += ["-LAYER", "L", layer_name, ""]
+        lines += ["-LAYER", "LO", layer_name, ""]
 
     # 저장 전 전체 보기 (Zoom Extents)
     lines += ["_ZOOM", "_E"]
@@ -374,12 +331,7 @@ def convert_single(accoreconsole_path, sat_path, base_folder, log_queue, options
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         if os.path.exists(dwg_path):
-            enc_result = fasoo_encrypt_file(dwg_path)
-            if enc_result is True:
-                log_queue.put(("ok", f"[완료]    {display}.dwg  (FASOO 암호화 적용)"))
-            else:
-                log_queue.put(("ok", f"[완료]    {display}.dwg"))
-                log_queue.put(("err", f"[암호화 실패]  {display}.dwg  —  {enc_result}"))
+            log_queue.put(("ok", f"[완료]    {display}.dwg"))
             return "ok"
         else:
             log_queue.put(("err", f"[실패]    {display}.sat  —  DWG 파일 미생성"))
