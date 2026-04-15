@@ -244,11 +244,12 @@
       (if (and (= t1 "3DSOLID") (= t2 "3DSOLID"))
         (ic:solid-check  (car r1) (car r2))
         (ic:insert-check (car r1) (car r2))))
-    (when ifd
-      (if (not keep) (ic:safe-del ifd))
-      (setq results (cons (list (car r1) (car r2) t1 t2) results)))
+    (if ifd
+      (progn
+        (if (not keep) (ic:safe-del ifd))
+        (setq results (cons (list (car r1) (car r2) t1 t2) results))))
     (setq done (1+ done))
-    (when (= 0 (rem done 50))
+    (if (= 0 (rem done 50))
       (princ (strcat "\r  " (itoa done) "/" (itoa total) " 처리 중..."))))
   (setvar "REGENMODE" 1)
   (setvar "HIGHLIGHT" 1)
@@ -299,33 +300,34 @@
   ;; ── 선택
   (princ "\n검사할 객체를 선택하세요 (3DSOLID / INSERT / XREF):")
   (setq ss (ssget '((0 . "3DSOLID,INSERT"))))
-  (if (null ss)
-    (progn (princ "\n  선택된 객체 없음.") (command "_.UNDO" "E") (return))
-    (progn
-      (initget "Yes No")
-      (setq keep
-        (= "Yes"
-           (getkword "\n간섭 솔리드를 도면에 남기겠습니까? [Yes/No] <No>: ")))
+  (cond
+    ((null ss)
+     (princ "\n  선택된 객체 없음."))
+    (T
+     (initget "Yes No")
+     (setq keep
+       (= "Yes"
+          (getkword "\n간섭 솔리드를 도면에 남기겠습니까? [Yes/No] <No>: ")))
 
-      ;; ── Phase 1
-      (princ "\n[1/3] 객체 수집 중...")
-      (setq objs (ic:collect ss))
-      (princ (strcat " → " (itoa (length objs)) "개"))
+     ;; ── Phase 1
+     (princ "\n[1/3] 객체 수집 중...")
+     (setq objs (ic:collect ss))
+     (princ (strcat " → " (itoa (length objs)) "개"))
 
-      (if (< (length objs) 2)
-        (princ "\n  검사 가능한 객체가 2개 미만입니다.")
-        (progn
-          ;; ── Phase 2
-          (princ "\n[2/3] BVH 브로드 페이즈...")
-          (setq cands (ic:broad-phase objs))
-          (princ (strcat " → 후보 " (itoa (length cands)) "쌍"))
+     (if (< (length objs) 2)
+       (princ "\n  검사 가능한 객체가 2개 미만입니다.")
+       (progn
+         ;; ── Phase 2
+         (princ "\n[2/3] BVH 브로드 페이즈...")
+         (setq cands (ic:broad-phase objs))
+         (princ (strcat " → 후보 " (itoa (length cands)) "쌍"))
 
-          ;; ── Phase 3
-          (princ "\n[3/3] 내로우 페이즈...")
-          (setq results (ic:narrow-phase cands keep))
+         ;; ── Phase 3
+         (princ "\n[3/3] 내로우 페이즈...")
+         (setq results (ic:narrow-phase cands keep))
 
-          ;; ── Report
-          (ic:report results (length objs) (length cands))))))
+         ;; ── Report
+         (ic:report results (length objs) (length cands))))))
 
   (command "_.UNDO" "E")
   (princ))
