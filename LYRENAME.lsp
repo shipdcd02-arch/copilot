@@ -1,5 +1,5 @@
 ;;; ============================================================
-;;;  LYRENAME.LSP  -  레이어 이름 일괄 변경 유틸리티 v2
+;;;  LYRENAME.LSP  -  레이어 이름 일괄 변경 유틸리티 v3
 ;;;  명령어: LYRENAME
 ;;; ============================================================
 (vl-load-com)
@@ -91,14 +91,33 @@
   res
 )
 
+;;;─── 0 ~ (n-1) 정수 리스트 생성 ─────────────────────────────
+(defun lyr:range (n / i res)
+  (setq i 0 res '())
+  (repeat n
+    (setq res (append res (list i))
+          i   (1+ i))
+  )
+  res
+)
+
+;;;─── 두 리스트 합집합 (순서 유지, 중복 제거) ────────────────
+(defun lyr:union (lst1 lst2 / res)
+  (setq res lst1)
+  (foreach item lst2
+    (if (not (member item res))
+      (setq res (append res (list item)))
+    )
+  )
+  res
+)
+
 ;;;─── 공통 최장 부분 문자열 (대소문자 무시) ───────────────────
-;;; 리스트의 모든 항목에 포함된 가장 긴 공통 문자열 반환
 (defun lyr:common-substr (str-list / sorted s1 n len start sub found result)
   (cond
     ((null str-list) "")
     ((= (length str-list) 1) (car str-list))
     (T
-      ;; 가장 짧은 문자열부터 검색
       (setq sorted (vl-sort (append str-list nil)
                     '(lambda (a b) (< (strlen a) (strlen b)))))
       (setq s1 (car sorted)
@@ -125,67 +144,55 @@
   )
 )
 
-;;;─── 리스트박스 내용 갱신 ────────────────────────────────────
+;;;─── 리스트박스 내용 갱신 (mode 3 = 전체 삭제 후 추가) ───────
 (defun lyr:refresh-list (lst)
-  (start_list "layer_list" 2)
+  (start_list "layer_list" 3)
   (if lst (mapcar 'add_list lst))
   (end_list)
 )
 
+;;;─── 선택 수 표시 갱신 ───────────────────────────────────────
+(defun lyr:update-count ()
+  (set_tile "sel_count"
+    (strcat (itoa (length *lyr:sel_names*)) " 개 선택됨"))
+)
+
 ;;;─── 선택 이벤트 처리 ────────────────────────────────────────
-;;; 필터로 숨겨진 선택 유지 + 공통 키워드 자동계산 + 보호 로직
 (defun lyr:on-select (sel-str / new-vis hidden new-all common)
-  ;; 현재 필터 기준으로 새로 선택된 이름
   (setq new-vis (lyr:idx->names (lyr:parse-sel sel-str) *lyr:filtered*))
-  ;; 필터로 숨겨진 기존 선택은 유지
   (setq hidden
     (vl-remove-if '(lambda (n) (member n *lyr:filtered*)) *lyr:sel_names*))
   (setq new-all (append new-vis hidden))
-
   (cond
-    ;; ── 수동 모드: 키워드 건드리지 않고 이름만 업데이트 ────────
     (*lyr:kw_manual*
      (setq *lyr:sel_names* new-all))
-
-    ;; ── 자동 모드 ──────────────────────────────────────────────
-    ;; 선택 전체 해제
     ((null new-all)
      (setq *lyr:sel_names* '()
            *lyr:before* "")
      (set_tile "before_name" ""))
-
-    ;; 공통 문자열 있음 → 키워드 업데이트
     ((not (= (setq common (lyr:common-substr new-all)) ""))
      (setq *lyr:sel_names* new-all
            *lyr:before* common)
      (set_tile "before_name" common))
-
-    ;; 공통 없음 & 기존 키워드 있음 → 보호 (새 선택 무시)
     ((not (= *lyr:before* ""))
      (set_tile "layer_list"
        (lyr:idx->str (lyr:names->idx *lyr:sel_names* *lyr:filtered*))))
-
-    ;; 공통 없음 & 기존 키워드도 없음 → 그냥 업데이트
     (T
      (setq *lyr:sel_names* new-all
            *lyr:before* "")
      (set_tile "before_name" ""))
   )
-  (set_tile "sel_count"
-    (strcat "선택: " (itoa (length *lyr:sel_names*)) " 개"))
+  (lyr:update-count)
 )
 
 ;;;─── 필터 이벤트 처리 ────────────────────────────────────────
-;;; 표시 목록 갱신 후 기존 선택 복원
 (defun lyr:on-filter (kw / restore-idx)
   (setq *lyr:filter_kw* kw
         *lyr:filtered*  (lyr:filter kw *lyr:all*))
   (lyr:refresh-list *lyr:filtered*)
-  ;; 기존 선택 중 현재 필터에 보이는 항목만 복원
   (setq restore-idx (lyr:names->idx *lyr:sel_names* *lyr:filtered*))
   (set_tile "layer_list" (lyr:idx->str restore-idx))
-  (set_tile "sel_count"
-    (strcat "선택: " (itoa (length *lyr:sel_names*)) " 개"))
+  (lyr:update-count)
 )
 
 ;;;─── DCL 파일 생성 ────────────────────────────────────────────
@@ -207,26 +214,33 @@
       "    }"
       "  }"
       "  : row {"
-      "    : text { label = \"레이어 필터 :\"; width = 13; fixed_width = true; }"
-      "    : edit_box { key = \"filter_name\"; edit_width = 47; }"
+      "    : text { label = \"레이어 필터 :\"; width = 11; fixed_width = true; }"
+      "    : edit_box { key = \"filter_name\"; edit_width = 28; }"
+      "    : button { key = \"btn_apply\";    label = \"적용\";     width = 8;  fixed_width = true; }"
+      "    : button { key = \"btn_selall\";   label = \"전체선택\"; width = 10; fixed_width = true; }"
+      "    : button { key = \"btn_selclear\"; label = \"전체해제\"; width = 10; fixed_width = true; }"
       "  }"
-      "  : text { label = \"레이어 목록  (Ctrl/Shift: 다중선택  |  필터: Enter/Tab)\"; }"
+      "  : text { label = \"레이어 목록  (Ctrl/Shift: 다중선택  |  필터: Enter/Tab/적용버튼)\"; }"
       "  : list_box {"
       "    key             = \"layer_list\";"
-      "    height          = 13;"
+      "    height          = 20;"
       "    width           = 62;"
       "    multiple_select = true;"
       "  }"
       "  : row {"
-      "    : text { key = \"sel_count\"; label = \"선택: 0 개\"; width = 36; }"
+      "    : boxed_column {"
+      "      label = \"선택 현황\";"
+      "      : text {"
+      "        key   = \"sel_count\";"
+      "        label = \"0 개 선택됨\";"
+      "        width = 18;"
+      "        alignment = centered;"
+      "      }"
+      "    }"
       "    : spacer {}"
-      "  }"
-      "  : row {"
-      "    : button { key = \"btn_convert\"; label = \"  변  환  \";"
-      "               width = 14; is_default = true; }"
-      "    : spacer {}"
-      "    : button { key = \"cancel\"; label = \"  취  소  \";"
-      "               width = 14; is_cancel = true; }"
+      "    : button { key = \"btn_convert\"; label = \"  변  환  \"; width = 14; is_default = true; }"
+      "    : spacer_0 {}"
+      "    : button { key = \"cancel\";      label = \"  취  소  \"; width = 14; is_cancel  = true; }"
       "  }"
       "  errtile;"
       "}"
@@ -242,11 +256,9 @@
       "    multiple_select = false;"
       "  }"
       "  : row {"
-      "    : button { key = \"accept\"; label = \"  변환 실행  \";"
-      "               is_default = true; width = 16; }"
+      "    : button { key = \"accept\"; label = \"  변환 실행  \"; is_default = true; width = 16; }"
       "    : spacer {}"
-      "    : button { key = \"cancel\"; label = \"  취  소  \";"
-      "               is_cancel = true; width = 16; }"
+      "    : button { key = \"cancel\"; label = \"  취  소  \";   is_cancel  = true; width = 16; }"
       "  }"
       "}"
     )
@@ -255,13 +267,13 @@
   (close fp)
 )
 
-;;;─── 확인 다이얼로그 (변환 전 최종 검토) ─────────────────────
+;;;─── 확인 다이얼로그 ─────────────────────────────────────────
 (defun lyr:show-confirm (dcl_id items warn-msg)
   (if (not (new_dialog "confirm_dlg" dcl_id))
     (progn (alert "확인 다이얼로그를 열 수 없습니다.") nil)
     (progn
       (set_tile "confirm_warn" warn-msg)
-      (start_list "confirm_list" 2)
+      (start_list "confirm_list" 3)
       (mapcar 'add_list items)
       (end_list)
       (action_tile "accept" "(done_dialog 1)")
@@ -276,16 +288,16 @@
                       confirm-items warn-msg need-warn
                       cnt old-n new-n occur label errs msg)
 
-  ;; ── 전역 상태 초기화 ──────────────────────────────────────
-  (setq *lyr:all*       (lyr:get-all)  ; 전체 레이어 목록
-        *lyr:filtered*  *lyr:all*      ; 필터 후 표시 목록 (처음엔 전체)
-        *lyr:sel_names* '()            ; 선택된 레이어 이름 목록
-        *lyr:before*    ""             ; 변경 전 키워드
-        *lyr:after*     ""             ; 변경 후 텍스트
-        *lyr:kw_manual* nil            ; T=수동입력, nil=자동채움
-        *lyr:filter_kw* "")            ; 필터 키워드
+  ;; 전역 초기화
+  (setq *lyr:all*       (lyr:get-all)
+        *lyr:filtered*  *lyr:all*
+        *lyr:sel_names* '()
+        *lyr:before*    ""
+        *lyr:after*     ""
+        *lyr:kw_manual* nil
+        *lyr:filter_kw* "")
 
-  ;; ── DCL 생성 & 로드 ───────────────────────────────────────
+  ;; DCL 생성 & 로드
   (setq dcl_file (strcat (getvar "TEMPPREFIX") "lyrename_tmp.dcl"))
   (lyr:write-dcl dcl_file)
   (setq dcl_id (load_dialog dcl_file))
@@ -293,28 +305,53 @@
     (progn (alert "다이얼로그를 열 수 없습니다.") (exit))
   )
 
-  ;; ── 초기 상태: 전체 레이어 표시 ──────────────────────────
+  ;; 초기 상태: 전체 레이어 표시
   (lyr:refresh-list *lyr:all*)
-  (set_tile "sel_count" "선택: 0 개")
+  (set_tile "sel_count" "0 개 선택됨")
 
   ;; ── 타일 이벤트 ───────────────────────────────────────────
 
-  ;; [변경 전] 사용자 직접 입력 → 수동 모드 전환
-  ;; 비우면 자동 모드로 복귀
+  ;; [변경 전] - 직접 입력 시 수동 모드, 지우면 자동 모드로 복귀
   (action_tile "before_name"
     "(progn
        (setq *lyr:before* $value)
        (setq *lyr:kw_manual* (not (= *lyr:before* \"\"))))"
   )
 
-  ;; [변경 후] 입력
+  ;; [변경 후]
   (action_tile "after_name"
     "(setq *lyr:after* $value)"
   )
 
-  ;; [레이어 필터] - Enter 또는 Tab 으로 적용
+  ;; [레이어 필터] - Enter / Tab 으로 적용
   (action_tile "filter_name"
     "(lyr:on-filter $value)"
+  )
+
+  ;; [적용] 버튼 - 필터 즉시 적용
+  (action_tile "btn_apply"
+    "(lyr:on-filter (get_tile \"filter_name\"))"
+  )
+
+  ;; [전체선택] 버튼 - 현재 필터된 모든 레이어 선택에 추가
+  (action_tile "btn_selall"
+    "(progn
+       (setq *lyr:sel_names* (lyr:union *lyr:sel_names* *lyr:filtered*))
+       (set_tile \"layer_list\"
+         (lyr:idx->str (lyr:names->idx *lyr:sel_names* *lyr:filtered*)))
+       (lyr:update-count))"
+  )
+
+  ;; [전체해제] 버튼 - 모든 선택 해제 (자동 모드 복귀 포함)
+  (action_tile "btn_selclear"
+    "(progn
+       (setq *lyr:sel_names* '())
+       (if (not *lyr:kw_manual*)
+         (progn
+           (setq *lyr:before* \"\")
+           (set_tile \"before_name\" \"\")))
+       (set_tile \"layer_list\" \"\")
+       (lyr:update-count))"
   )
 
   ;; 리스트 선택 변경
@@ -322,7 +359,7 @@
     "(lyr:on-select $value)"
   )
 
-  ;; [변환] 버튼 - 기본 유효성 검사 후 닫기
+  ;; [변환] 버튼
   (action_tile "btn_convert"
     "(cond
        ((= *lyr:before* \"\")
@@ -341,73 +378,54 @@
   ;; ── 변환 처리 ─────────────────────────────────────────────
   (if (= ret 1)
     (progn
-      ;; 확인 목록 구성 + 경고 플래그 계산
       (setq confirm-items '()
             need-warn     nil)
-
       (foreach lyr-n *lyr:sel_names*
         (setq new-n  (lyr:replace-all *lyr:before* *lyr:after* lyr-n)
               occur  (lyr:count-occur *lyr:before* lyr-n))
         (setq label
           (cond
-            ;; 키워드 미포함
             ((= occur 0)
              (setq need-warn T)
              (strcat "  [키워드 없음] " lyr-n "  (변경 안됨)"))
-            ;; 키워드 2회 이상 포함
             ((> occur 1)
              (setq need-warn T)
-             (strcat "  [" (itoa occur) "회 포함] " lyr-n
-                     "  ->  " new-n))
-            ;; 정상
+             (strcat "  [" (itoa occur) "회 포함]  " lyr-n "  ->  " new-n))
             (T
              (strcat "  " lyr-n "  ->  " new-n))
           )
         )
         (setq confirm-items (append confirm-items (list label)))
       )
-
-      ;; 확인 다이얼로그 표시 (항상)
       (setq warn-msg
         (if need-warn
-          (strcat "[!] 경고 항목이 포함되어 있습니다. "
-                  "계속 진행하시겠습니까?")
+          "[!] 경고 항목이 포함되어 있습니다. 계속 진행하시겠습니까?"
           (strcat (itoa (length *lyr:sel_names*))
                   " 개 레이어를 변환합니다. 내용을 확인하세요.")
         )
       )
-
       (if (lyr:show-confirm dcl_id confirm-items warn-msg)
-        ;; ── 실제 이름 변경 ──────────────────────────────────
         (progn
-          (setq cnt 0
-                errs "")
+          (setq cnt 0 errs "")
           (foreach lyr-n *lyr:sel_names*
             (setq old-n lyr-n
                   new-n (lyr:replace-all *lyr:before* *lyr:after* old-n)
                   occur (lyr:count-occur *lyr:before* old-n))
             (cond
-              ;; 키워드 없는 레이어 스킵
               ((= occur 0) nil)
-              ;; 결과가 동일하면 스킵
               ((equal old-n new-n) nil)
-              ;; 이름 충돌
               ((tblsearch "LAYER" new-n)
-               (setq errs
-                 (strcat errs "\n  " old-n " -> " new-n "  (이름 충돌)")))
-              ;; 정상 변경
+               (setq errs (strcat errs "\n  " old-n " -> " new-n "  (이름 충돌)")))
               (T
                (vl-cmdf "-LAYER" "RENAME" old-n new-n "")
                (setq cnt (1+ cnt)))
             )
           )
-          (setq msg
-            (strcat (itoa cnt) " 개 레이어 이름이 변경되었습니다."))
+          (setq msg (strcat (itoa cnt) " 개 레이어 이름이 변경되었습니다."))
           (if (not (= errs ""))
             (setq msg (strcat msg "\n\n[오류]" errs)))
           (alert msg)
         )
-        ;; ── 취소 ──────────────────────────────────────────
         (princ "\n변환이 취소되었습니다.")
       )
     )
