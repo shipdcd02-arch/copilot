@@ -158,7 +158,10 @@
 )
 
 ;;;─── 선택 이벤트 처리 ────────────────────────────────────────
+;;; *lyr:in-select* 플래그로 set_tile 에 의한 재귀 진입 방지
 (defun lyr:on-select (sel-str / new-vis hidden new-all common)
+  (if *lyr:in-select* (exit))                  ; 재진입 시 즉시 탈출
+  (setq *lyr:in-select* T)
   (setq new-vis (lyr:idx->names (lyr:parse-sel sel-str) *lyr:filtered*))
   (setq hidden
     (vl-remove-if '(lambda (n) (member n *lyr:filtered*)) *lyr:sel_names*))
@@ -175,6 +178,7 @@
            *lyr:before* common)
      (set_tile "before_name" common))
     ((not (= *lyr:before* ""))
+     ;; 보호: 이전 선택 복원 (set_tile 이 재귀를 유발할 수 있어 플래그로 막음)
      (set_tile "layer_list"
        (lyr:idx->str (lyr:names->idx *lyr:sel_names* *lyr:filtered*))))
     (T
@@ -183,6 +187,7 @@
      (set_tile "before_name" ""))
   )
   (lyr:update-count)
+  (setq *lyr:in-select* nil)
 )
 
 ;;;─── 필터 이벤트 처리 ────────────────────────────────────────
@@ -295,7 +300,8 @@
         *lyr:before*    ""
         *lyr:after*     ""
         *lyr:kw_manual* nil
-        *lyr:filter_kw* "")
+        *lyr:filter_kw* ""
+        *lyr:in-select* nil)           ; 선택 이벤트 재진입 방지 플래그
 
   ;; DCL 생성 & 로드
   (setq dcl_file (strcat (getvar "TEMPPREFIX") "lyrename_tmp.dcl"))
