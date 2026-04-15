@@ -339,6 +339,10 @@
        (setq *lyr:sel_names* (lyr:union *lyr:sel_names* *lyr:filtered*))
        (set_tile \"layer_list\"
          (lyr:idx->str (lyr:names->idx *lyr:sel_names* *lyr:filtered*)))
+       (if (not *lyr:kw_manual*)
+         (progn
+           (setq *lyr:before* (lyr:common-substr *lyr:sel_names*))
+           (set_tile \"before_name\" *lyr:before*)))
        (lyr:update-count))"
   )
 
