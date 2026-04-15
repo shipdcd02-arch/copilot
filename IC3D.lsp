@@ -2,10 +2,10 @@
 ;;; IC3D.LSP  –  3D Interference Checker  (Optimized / Large Drawing)
 ;;; ================================================================
 ;;; 명령어  : IC3D
-;;; 요구사항: AutoCAD 2011+,  Visual LISP
+;;; 요구사항: AutoCAD 2014+,  Visual LISP
 ;;;
 ;;; 파이프라인
-;;;   Phase 1. 수집    ssget "_X" → 3DSOLID / INSERT / XREF
+;;;   Phase 1. 수집    사용자 선택 → 3DSOLID / INSERT / XREF
 ;;;   Phase 2. Broad   BVH(자기충돌) → 중복없는 후보 쌍
 ;;;   Phase 3. Narrow  3D↔3D : vla-boolean(Intersect)
 ;;;                    Block/XREF 포함 : INTERFERE 명령
@@ -15,11 +15,11 @@
 ;;; vla-boolean Operation 값  (AcBooleanType: Union=0 Intersection=1 Subtraction=2)
 (if (not (boundp 'acIntersection)) (setq acIntersection 1))
 
-;;; BVH 리프 한계 (이 수 이하면 리프 노드)
+;;; BVH 리프 한계
 (setq IC3D:LEAF-MAX 4)
 
 ;;; ================================================================
-;;; § 유틸
+;;; § 유틸 (스택 오버플로우 방지 – 전부 반복문)
 ;;; ================================================================
 
 (defun ic:safe-del (e)
@@ -30,16 +30,24 @@
 (defun ic:vla-copy (e)
   (vlax-vla-object->ename (vla-copy (vlax-ename->vla-object e))))
 
-;;; nth 대신 (car/cadr/caddr) 쓰기 어려운 자리에 사용
 (defun ic:nth-pt (pt i)
   (cond ((= i 0) (car pt)) ((= i 1) (cadr pt)) (T (caddr pt))))
 
-(defun ic:take (lst n)
-  (if (or (zerop n) (null lst)) '()
-    (cons (car lst) (ic:take (cdr lst) (1- n)))))
+;;; 앞쪽 n개 (반복문)
+(defun ic:take (lst n / acc)
+  (setq acc '())
+  (while (and (> n 0) lst)
+    (setq acc (cons (car lst) acc)
+          lst (cdr lst)
+          n   (1- n)))
+  (reverse acc))
 
+;;; 앞쪽 n개 건너뜀 (반복문)
 (defun ic:drop (lst n)
-  (if (or (zerop n) (null lst)) lst (ic:drop (cdr lst) (1- n))))
+  (while (and (> n 0) lst)
+    (setq lst (cdr lst)
+          n   (1- n)))
+  lst)
 
 ;;; ================================================================
 ;;; § BBox 획득  (VLA GetBoundingBox)
@@ -57,47 +65,43 @@
               (vlax-safearray->list mx))))))
 
 ;;; ================================================================
-;;; § Phase 1 : 객체 수집
+;;; § Phase 1 : 객체 수집  (사용자 선택 기반)
 ;;; rec = (ename  minpt  maxpt  type)
-;;;       type : "3DSOLID" | "INSERT" | "XREF"
 ;;; ================================================================
-(defun ic:collect ( / ss n i e ed bbox bname bdef lst)
+(defun ic:collect (ss / n i e ed bbox bname bdef lst)
   (setq lst '()
-        ss  (ssget "_X" '((0 . "3DSOLID,INSERT"))))
-  (if (null ss)
-    (progn (princ "\n  대상 객체 없음.") lst)
-    (progn
-      (setq n (sslength ss)  i 0)
-      (while (< i n)
-        (setq e    (ssname ss i)
-              ed   (entget e)
-              bbox (ic:get-bbox e))
-        (if bbox
-          (progn
-            (setq bname (cdr (assoc 2 ed)))
-            (setq lst
-              (cons
-                (list e (car bbox) (cadr bbox)
-                  (cond
-                    ((= (cdr (assoc 0 ed)) "3DSOLID") "3DSOLID")
-                    ((and bname
-                          (setq bdef (tblobjname "BLOCK" bname))
-                          (/= 0 (logand 4 (cdr (assoc 70 (entget bdef))))))
-                     "XREF")
-                    (T "INSERT")))
-                lst))))
-        (setq i (1+ i)))
-      lst)))
+        n   (sslength ss)
+        i   0)
+  (while (< i n)
+    (setq e    (ssname ss i)
+          ed   (entget e)
+          bbox (ic:get-bbox e))
+    (if bbox
+      (progn
+        (setq bname (cdr (assoc 2 ed)))
+        (setq lst
+          (cons
+            (list e (car bbox) (cadr bbox)
+              (cond
+                ((= (cdr (assoc 0 ed)) "3DSOLID") "3DSOLID")
+                ((and bname
+                      (setq bdef (tblobjname "BLOCK" bname))
+                      (/= 0 (logand 4 (cdr (assoc 70 (entget bdef))))))
+                 "XREF")
+                (T "INSERT")))
+            lst))))
+    (setq i (1+ i)))
+  lst)
 
 ;;; ================================================================
 ;;; § Phase 2 : BVH Broad Phase
 ;;;
-;;; 노드 구조: (type  payload  mn  mx)
-;;;   type = 'L  →  payload = (rec ...)          ← 리프
-;;;   type = 'N  →  payload = (left-node right-node)  ← 내부
+;;; 노드: (type  payload  mn  mx)
+;;;   'L → payload = (rec ...)
+;;;   'N → payload = (left-node right-node)
 ;;; ================================================================
 
-;;; ── AABB 합집합 ──────────────────────────────────────────────────
+;;; ── AABB 합집합 (반복문) ─────────────────────────────────────────
 (defun ic:aabb-union (recs / mn mx r)
   (setq mn (cadr (car recs))
         mx (caddr (car recs)))
@@ -106,19 +110,19 @@
           mx (mapcar 'max mx (caddr r))))
   (list mn mx))
 
-;;; ── 가장 긴 축 (0=X 1=Y 2=Z) ────────────────────────────────────
+;;; ── 가장 긴 축 ───────────────────────────────────────────────────
 (defun ic:longest-axis (mn mx / d)
   (setq d (mapcar '- mx mn))
   (cond ((and (>= (car d) (cadr d)) (>= (car d) (caddr d))) 0)
         ((>= (cadr d) (caddr d)) 1)
         (T 2)))
 
-;;; ── rec 중심 좌표 (axis 방향) ────────────────────────────────────
+;;; ── rec 중심값 ───────────────────────────────────────────────────
 (defun ic:rec-center (r axis)
   (* 0.5 (+ (ic:nth-pt (cadr r) axis)
             (ic:nth-pt (caddr r) axis))))
 
-;;; ── BVH 빌드 (재귀) ──────────────────────────────────────────────
+;;; ── BVH 빌드 (재귀 깊이 = log2(n/LEAF_MAX) ≈ 11~14 — 안전) ─────
 (defun ic:bvh-build (recs / aabb mn mx axis sorted mid)
   (setq aabb (ic:aabb-union recs)
         mn   (car aabb)
@@ -137,7 +141,7 @@
                   (ic:bvh-build (ic:drop sorted mid)))
             mn mx))))
 
-;;; ── 두 노드 AABB 겹침 판정 ───────────────────────────────────────
+;;; ── AABB 겹침 판정 ───────────────────────────────────────────────
 (defun ic:nodes-overlap (na nb / mna mxa mnb mxb)
   (setq mna (caddr na)  mxa (cadddr na)
         mnb (caddr nb)  mxb (cadddr nb))
@@ -145,15 +149,16 @@
        (<= (cadr  mna) (cadr  mxb)) (>= (cadr  mxa) (cadr  mnb))
        (<= (caddr mna) (caddr mxb)) (>= (caddr mxa) (caddr mnb))))
 
-;;; ── 리프 내부 쌍 ─────────────────────────────────────────────────
-(defun ic:leaf-pairs (recs acc / first rest)
-  (if (< (length recs) 2) acc
-    (progn
-      (setq first (car recs)  rest (cdr recs))
-      (foreach r rest (setq acc (cons (list first r) acc)))
-      (ic:leaf-pairs rest acc))))
+;;; ── 리프 내부 쌍 (반복문 — 스택 안전) ──────────────────────────
+(defun ic:leaf-pairs (recs acc / head tail)
+  (while (>= (length recs) 2)
+    (setq head (car recs)
+          tail (cdr recs))
+    (foreach r tail (setq acc (cons (list head r) acc)))
+    (setq recs tail))
+  acc)
 
-;;; ── Cross 쌍 : 두 서브트리 간 (중복 없음) ───────────────────────
+;;; ── Cross 쌍 : 두 서브트리 간 (재귀 깊이 = 트리 깊이 ≈ 14) ─────
 (defun ic:bvh-cross (na nb acc / da db)
   (cond
     ((not (ic:nodes-overlap na nb)) acc)
@@ -177,7 +182,7 @@
      (setq acc (ic:bvh-cross (cadr da) (car  db) acc))
      (ic:bvh-cross            (cadr da) (cadr db) acc))))
 
-;;; ── 자기충돌 탐색 (중복 쌍 생성 없음) ───────────────────────────
+;;; ── 자기충돌 탐색 (재귀 깊이 = 트리 깊이) ──────────────────────
 (defun ic:bvh-self (node acc / da)
   (if (= (car node) 'L)
     (ic:leaf-pairs (cadr node) acc)
@@ -196,12 +201,11 @@
 ;;; § Phase 3 : Narrow Phase
 ;;; ================================================================
 
-;;; ── 3DSOLID ↔ 3DSOLID  (VLA Boolean — 커맨드 프로세서 우회) ─────
+;;; ── 3DSOLID ↔ 3DSOLID  (VLA Boolean) ───────────────────────────
 (defun ic:solid-check (e1 e2 / c1 c2 v1 vol res)
   (setq c1 (ic:vla-copy e1)
         c2 (ic:vla-copy e2)
         v1 (vlax-ename->vla-object c1))
-  ;; vla-boolean: c1 = c1 ∩ c2,  c2 소멸
   (setq res (vl-catch-all-apply
                'vla-boolean (list v1 acIntersection
                                   (vlax-ename->vla-object c2))))
@@ -210,15 +214,14 @@
                      (vl-catch-all-apply 'entget (list c2)))))
     (ic:safe-del c2))
   (cond
-    ;; 에러 = 교집합 없음
     ((vl-catch-all-error-p res) (ic:safe-del c1) nil)
     (T
      (setq vol (vl-catch-all-apply 'vlax-get (list v1 'Volume)))
      (if (and (not (vl-catch-all-error-p vol)) (> (abs vol) 1e-6))
-       c1                         ; 간섭 솔리드 반환 (caller가 관리)
+       c1
        (progn (ic:safe-del c1) nil)))))
 
-;;; ── INSERT / XREF 포함 쌍  (INTERFERE 명령 구동) ─────────────────
+;;; ── INSERT / XREF 포함 쌍  (INTERFERE 명령) ─────────────────────
 (defun ic:insert-check (e1 e2 / ss1 ss2 snap)
   (setq ss1  (ssadd e1 (ssadd))
         ss2  (ssadd e2 (ssadd))
@@ -232,7 +235,6 @@
   (setq results '()
         done    0
         total   (length cands))
-  ;; 화면 갱신 억제 → narrow phase 동안 리제너/하이라이트 끔
   (setvar "REGENMODE" 0)
   (setvar "HIGHLIGHT" 0)
   (foreach pair cands
@@ -246,9 +248,8 @@
       (if (not keep) (ic:safe-del ifd))
       (setq results (cons (list (car r1) (car r2) t1 t2) results)))
     (setq done (1+ done))
-    ;; 진행률 (50쌍마다 표시)
-    (when (zerop (rem done 50))
-      (princ (strcat "\r  " (itoa done) " / " (itoa total) " 쌍 처리 중..."))))
+    (when (= 0 (rem done 50))
+      (princ (strcat "\r  " (itoa done) "/" (itoa total) " 처리 중..."))))
   (setvar "REGENMODE" 1)
   (setvar "HIGHLIGHT" 1)
   results)
@@ -283,7 +284,7 @@
 ;;; ================================================================
 ;;; § 메인 커맨드  IC3D
 ;;; ================================================================
-(defun c:IC3D ( / *error* objs cands results keep)
+(defun c:IC3D ( / *error* ss objs cands results keep)
   (defun *error* (msg)
     (setvar "REGENMODE" 1)
     (setvar "HIGHLIGHT" 1)
@@ -293,32 +294,38 @@
     (princ))
 
   (command "_.UNDO" "BE")
-  (princ "\n[IC3D] 3D 간섭 검사 (대형 도면 최적화)")
+  (princ "\n[IC3D] 3D 간섭 검사")
 
-  (initget "Yes No")
-  (setq keep
-    (= "Yes"
-       (getkword "\n간섭 솔리드를 도면에 남기겠습니까? [Yes/No] <No>: ")))
-
-  ;; ── Phase 1
-  (princ "\n[1/3] 객체 수집 중...")
-  (setq objs (ic:collect))
-  (princ (strcat " → " (itoa (length objs)) "개 발견"))
-
-  (if (< (length objs) 2)
-    (princ "\n  검사 가능한 객체가 2개 미만입니다.")
+  ;; ── 선택
+  (princ "\n검사할 객체를 선택하세요 (3DSOLID / INSERT / XREF):")
+  (setq ss (ssget '((0 . "3DSOLID,INSERT"))))
+  (if (null ss)
+    (progn (princ "\n  선택된 객체 없음.") (command "_.UNDO" "E") (return))
     (progn
-      ;; ── Phase 2
-      (princ "\n[2/3] BVH 브로드 페이즈...")
-      (setq cands (ic:broad-phase objs))
-      (princ (strcat " → 후보 " (itoa (length cands)) "쌍"))
+      (initget "Yes No")
+      (setq keep
+        (= "Yes"
+           (getkword "\n간섭 솔리드를 도면에 남기겠습니까? [Yes/No] <No>: ")))
 
-      ;; ── Phase 3
-      (princ "\n[3/3] 내로우 페이즈 (VLA Boolean / INTERFERE)...")
-      (setq results (ic:narrow-phase cands keep))
+      ;; ── Phase 1
+      (princ "\n[1/3] 객체 수집 중...")
+      (setq objs (ic:collect ss))
+      (princ (strcat " → " (itoa (length objs)) "개"))
 
-      ;; ── Report
-      (ic:report results (length objs) (length cands))))
+      (if (< (length objs) 2)
+        (princ "\n  검사 가능한 객체가 2개 미만입니다.")
+        (progn
+          ;; ── Phase 2
+          (princ "\n[2/3] BVH 브로드 페이즈...")
+          (setq cands (ic:broad-phase objs))
+          (princ (strcat " → 후보 " (itoa (length cands)) "쌍"))
+
+          ;; ── Phase 3
+          (princ "\n[3/3] 내로우 페이즈...")
+          (setq results (ic:narrow-phase cands keep))
+
+          ;; ── Report
+          (ic:report results (length objs) (length cands))))))
 
   (command "_.UNDO" "E")
   (princ))
