@@ -42,20 +42,19 @@
   (if (or (zerop n) (null lst)) lst (ic:drop (cdr lst) (1- n))))
 
 ;;; ================================================================
-;;; § BBox 획득  (getbbox 우선 → VLA fallback)
+;;; § BBox 획득  (VLA GetBoundingBox)
 ;;; 반환: (minpt maxpt)  실패 시 nil
 ;;; ================================================================
-(defun ic:get-bbox (e / r vobj mn mx)
-  (setq r (vl-catch-all-apply 'getbbox (list e)))
-  (if (not (vl-catch-all-error-p r))
-    r
+(defun ic:get-bbox (e / r mn mx)
+  (setq r (vl-catch-all-apply 'vlax-ename->vla-object (list e)))
+  (if (vl-catch-all-error-p r)
+    nil
     (progn
-      (setq r (vl-catch-all-apply 'vlax-ename->vla-object (list e)))
-      (if (vl-catch-all-error-p r) nil
-        (progn
-          (vla-getboundingbox r 'mn 'mx)
-          (list (vlax-safearray->list mn)
-                (vlax-safearray->list mx)))))))
+      (setq r (vl-catch-all-apply 'vla-getboundingbox (list r 'mn 'mx)))
+      (if (vl-catch-all-error-p r)
+        nil
+        (list (vlax-safearray->list mn)
+              (vlax-safearray->list mx))))))
 
 ;;; ================================================================
 ;;; § Phase 1 : 객체 수집
@@ -66,27 +65,29 @@
   (setq lst '()
         ss  (ssget "_X" '((0 . "3DSOLID,INSERT"))))
   (if (null ss)
-    (progn (princ "\n  대상 객체 없음.") (return '())))
-  (setq n (sslength ss)  i 0)
-  (while (< i n)
-    (setq e    (ssname ss i)
-          ed   (entget e)
-          bbox (ic:get-bbox e))
-    (when bbox
-      (setq bname (cdr (assoc 2 ed)))
-      (setq lst
-        (cons
-          (list e (car bbox) (cadr bbox)
-            (cond
-              ((= (cdr (assoc 0 ed)) "3DSOLID") "3DSOLID")
-              ((and bname
-                    (setq bdef (tblobjname "BLOCK" bname))
-                    (/= 0 (logand 4 (cdr (assoc 70 (entget bdef))))))
-               "XREF")
-              (T "INSERT")))
-          lst)))
-    (setq i (1+ i)))
-  lst)
+    (progn (princ "\n  대상 객체 없음.") lst)
+    (progn
+      (setq n (sslength ss)  i 0)
+      (while (< i n)
+        (setq e    (ssname ss i)
+              ed   (entget e)
+              bbox (ic:get-bbox e))
+        (if bbox
+          (progn
+            (setq bname (cdr (assoc 2 ed)))
+            (setq lst
+              (cons
+                (list e (car bbox) (cadr bbox)
+                  (cond
+                    ((= (cdr (assoc 0 ed)) "3DSOLID") "3DSOLID")
+                    ((and bname
+                          (setq bdef (tblobjname "BLOCK" bname))
+                          (/= 0 (logand 4 (cdr (assoc 70 (entget bdef))))))
+                     "XREF")
+                    (T "INSERT")))
+                lst))))
+        (setq i (1+ i)))
+      lst)))
 
 ;;; ================================================================
 ;;; § Phase 2 : BVH Broad Phase
@@ -242,7 +243,7 @@
         (ic:solid-check  (car r1) (car r2))
         (ic:insert-check (car r1) (car r2))))
     (when ifd
-      (unless keep (ic:safe-del ifd))
+      (if (not keep) (ic:safe-del ifd))
       (setq results (cons (list (car r1) (car r2) t1 t2) results)))
     (setq done (1+ done))
     ;; 진행률 (50쌍마다 표시)
@@ -286,7 +287,7 @@
   (defun *error* (msg)
     (setvar "REGENMODE" 1)
     (setvar "HIGHLIGHT" 1)
-    (unless (wcmatch (strcase msg) "*CANCEL*,*EXIT*,*QUIT*")
+    (if (not (wcmatch (strcase msg) "*CANCEL*,*EXIT*,*QUIT*"))
       (princ (strcat "\n[IC3D] 오류: " msg)))
     (command "_.UNDO" "E")
     (princ))
