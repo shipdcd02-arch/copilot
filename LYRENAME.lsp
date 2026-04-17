@@ -325,9 +325,19 @@
        (setq *lyr:kw_manual* (not (= *lyr:before* \"\"))))"
   )
 
-  ;; [변경 후]
+  ;; [변경 후] - Enter 시 변환 실행
   (action_tile "after_name"
-    "(setq *lyr:after* $value)"
+    "(progn
+       (setq *lyr:after* $value)
+       (cond
+         ((= *lyr:before* \"\")
+          (set_tile \"error\" \"[변경 전] 키워드를 입력하세요.\"))
+         ((null *lyr:filtered*)
+          (set_tile \"error\" \"대상 레이어가 없습니다.\"))
+         (T
+          (if (null *lyr:sel_names*)
+            (setq *lyr:sel_names* *lyr:filtered*))
+          (done_dialog 1))))"
   )
 
   ;; [레이어 필터] - Enter 시 변환 실행 (Tab 이탈 시에도 동일하게 동작)
