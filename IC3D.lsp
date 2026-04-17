@@ -136,9 +136,10 @@
 (defun ic:nodes-overlap (na nb / mna mxa mnb mxb)
   (setq mna (caddr na)  mxa (cadddr na)
         mnb (caddr nb)  mxb (cadddr nb))
-  (and (<= (car   mna) (car   mxb)) (>= (car   mxa) (car   mnb))
-       (<= (cadr  mna) (cadr  mxb)) (>= (cadr  mxa) (cadr  mnb))
-       (<= (caddr mna) (caddr mxb)) (>= (caddr mxa) (caddr mnb))))
+  ;; 등호 제외: 면이 맞닿기만 해도 후보에서 제외
+  (and (< (car   mna) (car   mxb)) (> (car   mxa) (car   mnb))
+       (< (cadr  mna) (cadr  mxb)) (> (cadr  mxa) (cadr  mnb))
+       (< (caddr mna) (caddr mxb)) (> (caddr mxa) (caddr mnb))))
 
 ;;; ================================================================
 ;;; § Mid-Filter 함수들
@@ -186,10 +187,10 @@
         ry (- (cadr mx2) (cadr mn2))
         rz (- (caddr mx2) (caddr mn2))
         rad2 (* 0.5 (sqrt (+ (* rx rx) (* ry ry) (* rz rz)))))
-  ;; 중심간 거리² ≤ (r1+r2)²
+  ;; 중심간 거리² < (r1+r2)²  — 등호 제외 (외접 구체끼리 맞닿음 제외)
   (setq dx (- cx1 cx2)  dy (- cy1 cy2)  dz (- cz1 cz2)
         sumR (+ rad1 rad2))
-  (<= (+ (* dx dx) (* dy dy) (* dz dz)) (* sumR sumR)))
+  (< (+ (* dx dx) (* dy dy) (* dz dz)) (* sumR sumR)))
 
 ;;; ── 필터 C : OBB SAT ─────────────────────────────────────────────
 ;;; 코너 리스트 미생성 — AABB를 축에 직접 투영
@@ -201,11 +202,12 @@
         (+ (max px1 px2) (max py1 py2))))
 
 ;;; 축(ax,ay)에서 두 AABB가 분리되면 T
+;;; 등호 포함(>=): 투영 구간이 딱 맞닿기만 해도 분리로 처리
 (defun ic:sat-sep-p (mn1 mx1 mn2 mx2 ax ay / p1 p2)
   (setq p1 (ic:aabb-proj mn1 mx1 ax ay)
         p2 (ic:aabb-proj mn2 mx2 ax ay))
-  (or (> (car p1) (cadr p2))
-      (> (car p2) (cadr p1))))
+  (or (>= (car p1) (cadr p2))
+      (>= (car p2) (cadr p1))))
 
 ;;; OBB 통과 여부 (회전 INSERT 의 로컬 X/Y 축으로 SAT)
 (defun ic:obb-pass-p (r1 r2 / t1 t2 angle ed ca sa mn1 mx1 mn2 mx2)
@@ -342,34 +344,61 @@
 ;;; ================================================================
 ;;; § 결과 보고
 ;;; ================================================================
-(defun ic:report (results n-objs / n)
+(defun ic:report (results na nb layer-a layer-b / n r layer-of)
+  ;; ename → 레이어명 반환 헬퍼
+  (defun layer-of (e) (cdr (assoc 8 (entget e))))
   (textscr)
   (princ
     (strcat
       "\n\n══════════════════════════════════════════"
-      "\n  [IC3D] 간섭 검사 결과"
+      "\n  [IC3D] 두 그룹 간 간섭 검사 결과"
       "\n══════════════════════════════════════════"
-      "\n  검사 객체 수  : " (itoa n-objs)
-      "\n  Boolean 실행  : " (itoa IC3D:DONE) "쌍"
-      "\n  실제 간섭     : " (itoa (length results)) "쌍"
+      "\n  그룹 A [" layer-a "] : " (itoa na) "개"
+      "\n  그룹 B [" layer-b "] : " (itoa nb) "개"
+      "\n  Boolean 실행          : " (itoa IC3D:DONE) "쌍"
+      "\n  실제 간섭             : " (itoa (length results)) "쌍"
       "\n──────────────────────────────────────────"))
   (if (null results)
     (princ "\n  결과: 간섭 없음")
     (progn
       (setq n 1)
       (foreach r results
+        ;; r = (ename1 ename2 type1 type2)
         (princ
-          (strcat "\n  [" (itoa n) "]  "
-                  (vl-princ-to-string (car  r)) " (" (caddr  r) ")"
-                  "  ↔  "
-                  (vl-princ-to-string (cadr r)) " (" (cadddr r) ")"))
+          (strcat "\n  [" (itoa n) "]"
+                  "  A:" (vl-princ-to-string (car  r))
+                         " (" (caddr  r) "/" (layer-of (car  r)) ")"
+                  "  ↔"
+                  "  B:" (vl-princ-to-string (cadr r))
+                         " (" (cadddr r) "/" (layer-of (cadr r)) ")"))
         (setq n (1+ n)))))
   (princ "\n══════════════════════════════════════════\n"))
 
 ;;; ================================================================
-;;; § 메인 커맨드  IC3D
+;;; § 레이어 선택 헬퍼
+;;; 객체 클릭 → 레이어 자동 인식
+;;; 또는 Enter → 직접 입력 (와일드카드 * 사용 가능)
 ;;; ================================================================
-(defun c:IC3D ( / *error* ss objs root keep)
+(defun ic:pick-layer (group-label / sel layer)
+  (princ (strcat "\n[그룹 " group-label "] 레이어 대표 객체 클릭"
+                 "  (Enter = 레이어명 직접 입력):"))
+  (setq sel (entsel))
+  (if sel
+    (progn
+      (setq layer (cdr (assoc 8 (entget (car sel)))))
+      (princ (strcat "  → 레이어: \"" layer "\""))
+      layer)
+    (progn
+      (princ (strcat "\n[그룹 " group-label "] 레이어명"
+                     " (와일드카드 * 사용 가능): "))
+      (getstring T))))
+
+;;; ================================================================
+;;; § 메인 커맨드  IC3D
+;;; 두 레이어 그룹 선택 → 그룹 간 교차 검사만 수행
+;;; 같은 그룹 내부는 BVH 구조상 비교 자체가 발생하지 않음
+;;; ================================================================
+(defun c:IC3D ( / *error* layer-a layer-b ssA ssB objsA objsB rootA rootB)
   (defun *error* (msg)
     (setvar "REGENMODE" 1)
     (setvar "HIGHLIGHT" 1)
@@ -385,40 +414,65 @@
         IC3D:RESULTS  nil
         IC3D:DONE     0)
 
-  (princ "\n[IC3D] 3D 간섭 검사")
-  (princ "\n검사할 객체를 선택하세요 (3DSOLID / INSERT / XREF):")
-  (setq ss (ssget '((0 . "3DSOLID,INSERT"))))
+  (princ "\n[IC3D] 3D 간섭 검사 (레이어 두 그룹 비교)")
 
-  (cond
-    ((null ss)
-     (princ "\n  선택된 객체 없음."))
-    (T
-     (initget "Yes No")
-     (setq IC3D:KEEP
-       (= "Yes"
-          (getkword "\n간섭 솔리드를 도면에 남기겠습니까? [Yes/No] <No>: ")))
+  ;; ── 레이어 선택
+  (setq layer-a (ic:pick-layer "A"))
+  (if (= layer-a "")
+    (progn (princ "\n  그룹 A 레이어 없음. 취소.") (command "_.UNDO" "E") (princ))
+    (progn
+      (setq layer-b (ic:pick-layer "B"))
+      (if (= layer-b "")
+        (progn (princ "\n  그룹 B 레이어 없음. 취소.") (command "_.UNDO" "E") (princ))
+        (progn
 
-     (princ "\n[1/3] 객체 수집 중...")
-     (setq objs (ic:collect ss))
-     (princ (strcat " → " (itoa (length objs)) "개"))
+          ;; ── 레이어로 선택셋 구성
+          (setq ssA (ssget "_X" (list (cons 0 "3DSOLID,INSERT")
+                                      (cons 8 layer-a)))
+                ssB (ssget "_X" (list (cons 0 "3DSOLID,INSERT")
+                                      (cons 8 layer-b))))
 
-     (if (< (length objs) 2)
-       (princ "\n  검사 가능한 객체가 2개 미만입니다.")
-       (progn
-         (princ "\n[2/3] BVH 빌드 중...")
-         (setq root (ic:bvh-build objs))
-         (princ " 완료")
+          (cond
+            ((null ssA) (princ (strcat "\n  그룹 A [" layer-a "] 객체 없음.")))
+            ((null ssB) (princ (strcat "\n  그룹 B [" layer-b "] 객체 없음.")))
+            (T
+             (initget "Yes No")
+             (setq IC3D:KEEP
+               (= "Yes"
+                  (getkword
+                    "\n간섭 솔리드를 도면에 남기겠습니까? [Yes/No] <No>: ")))
 
-         (princ "\n[3/3] 스트리밍 검사 (필터+Boolean)...")
-         (setvar "REGENMODE" 0)
-         (setvar "HIGHLIGHT" 0)
-         (ic:bvh-self-stream root)   ; 탐색+필터+Boolean 동시 진행
-         (setvar "REGENMODE" 1)
-         (setvar "HIGHLIGHT" 1)
+             ;; ── Phase 1: 수집
+             (princ "\n[1/3] 객체 수집 중...")
+             (setq objsA (ic:collect ssA)
+                   objsB (ic:collect ssB))
+             (princ (strcat "  A=" (itoa (length objsA))
+                            "개  B=" (itoa (length objsB)) "개"))
 
-         (ic:report IC3D:RESULTS (length objs))))))
+             (if (or (null objsA) (null objsB))
+               (princ "\n  한 그룹 이상 객체가 없습니다.")
+               (progn
+                 ;; ── Phase 2: 각 그룹 별도 BVH 빌드
+                 (princ "\n[2/3] BVH 빌드 중...")
+                 (setq rootA (ic:bvh-build objsA)
+                       rootB (ic:bvh-build objsB))
+                 (princ " 완료")
 
-  (command "_.UNDO" "E")
-  (princ))
+                 ;; ── Phase 3: 그룹 간 교차 스트리밍만 실행
+                 ;;  ic:bvh-cross-stream 은 두 트리 간 쌍만 생성
+                 ;;  → 같은 그룹 내 비교는 구조상 발생 불가
+                 (princ "\n[3/3] 교차 간섭 검사 중...")
+                 (setvar "REGENMODE" 0)
+                 (setvar "HIGHLIGHT" 0)
+                 (ic:bvh-cross-stream rootA rootB)
+                 (setvar "REGENMODE" 1)
+                 (setvar "HIGHLIGHT" 1)
+
+                 (ic:report IC3D:RESULTS
+                            (length objsA) (length objsB)
+                            layer-a layer-b))))))
+
+          (command "_.UNDO" "E")
+          (princ))))))
 
 (princ "\n[IC3D] 로드 완료.  명령어: IC3D\n")
