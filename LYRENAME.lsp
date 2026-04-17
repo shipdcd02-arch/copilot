@@ -314,6 +314,7 @@
   ;; 초기 상태: 전체 레이어 표시
   (lyr:refresh-list *lyr:all*)
   (set_tile "sel_count" "0 개 선택됨")
+  (mode_tile "before_name" 2)          ; 커서를 [변경 전] 입력란에 초기 포커스
 
   ;; ── 타일 이벤트 ───────────────────────────────────────────
 
@@ -370,15 +371,19 @@
   )
 
   ;; [변환] 버튼
+  ;; 선택이 없으면 현재 목록 전체를 대상으로 자동 지정
   (action_tile "btn_convert"
     "(cond
        ((= *lyr:before* \"\")
         (set_tile \"error\"
-          \"[변경 전] 키워드를 입력하거나 레이어를 선택하세요.\"))
-       ((null *lyr:sel_names*)
+          \"[변경 전] 키워드를 입력하세요.\"))
+       ((null *lyr:filtered*)
         (set_tile \"error\"
-          \"목록에서 레이어를 하나 이상 선택하세요.\"))
-       (T (done_dialog 1)))"
+          \"대상 레이어가 없습니다.\"))
+       (T
+        (if (null *lyr:sel_names*)
+          (setq *lyr:sel_names* *lyr:filtered*))
+        (done_dialog 1)))"
   )
 
   (action_tile "cancel" "(done_dialog 0)")
