@@ -225,7 +225,7 @@
       "    : button { key = \"btn_selall\";   label = \"전체선택\"; width = 10; fixed_width = true; }"
       "    : button { key = \"btn_selclear\"; label = \"전체해제\"; width = 10; fixed_width = true; }"
       "  }"
-      "  : text { label = \"레이어 목록  (Ctrl/Shift: 다중선택  |  필터: 적용버튼  |  Enter: 변환)\"; }"
+      "  : text { label = \"레이어 목록  (Ctrl/Shift: 다중선택  |  필터: Enter/적용버튼)\"; }"
       "  : list_box {"
       "    key             = \"layer_list\";"
       "    height          = 20;"
@@ -325,32 +325,14 @@
        (setq *lyr:kw_manual* (not (= *lyr:before* \"\"))))"
   )
 
-  ;; [변경 후] - Enter 시 변환 실행
+  ;; [변경 후]
   (action_tile "after_name"
-    "(progn
-       (setq *lyr:after* $value)
-       (cond
-         ((= *lyr:before* \"\")
-          (set_tile \"error\" \"[변경 전] 키워드를 입력하세요.\"))
-         ((null *lyr:filtered*)
-          (set_tile \"error\" \"대상 레이어가 없습니다.\"))
-         (T
-          (if (null *lyr:sel_names*)
-            (setq *lyr:sel_names* *lyr:filtered*))
-          (done_dialog 1))))"
+    "(setq *lyr:after* $value)"
   )
 
-  ;; [레이어 필터] - Enter 시 변환 실행 (Tab 이탈 시에도 동일하게 동작)
+  ;; [레이어 필터] - Enter 시 필터 적용
   (action_tile "filter_name"
-    "(cond
-       ((= *lyr:before* \"\")
-        (set_tile \"error\" \"[변경 전] 키워드를 입력하세요.\"))
-       ((null *lyr:filtered*)
-        (set_tile \"error\" \"대상 레이어가 없습니다.\"))
-       (T
-        (if (null *lyr:sel_names*)
-          (setq *lyr:sel_names* *lyr:filtered*))
-        (done_dialog 1)))"
+    "(lyr:on-filter $value)"
   )
 
   ;; [적용] 버튼으로만 필터 적용
