@@ -8,22 +8,16 @@ import traceback
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 from faster_whisper import WhisperModel
-import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
+import gc
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from deep_translator import GoogleTranslator
 
 # ──────────────────────────────────────────────────────────────────────
 # 기본 설정
 # ──────────────────────────────────────────────────────────────────────
-DEFAULT_API_KEY = ""          # 여기에 API 키 입력 (또는 UI에서 입력)
-MODEL_NAME = "gemini-2.5-flash"
-
-SAFETY_SETTINGS = {
-    HarmCategory.HARM_CATEGORY_HARASSMENT:       HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_HATE_SPEECH:      HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-}
+# HuggingFace ID 또는 로컬 경로 — 8GB VRAM 기준 4B 권장
+QWEN_MODEL_ID = r"C:\Users\yoonk\Desktop\LLM models\qwen3.5-4b"
 
 # ──────────────────────────────────────────────────────────────────────
 # 컬러 팔레트
@@ -58,39 +52,46 @@ def dump_error(label: str):
     except Exception:
         pass
 
-def safe_response_text(resp) -> tuple[str | None, str | None]:
-    """
-    Gemini 응답에서 안전하게 텍스트를 추출합니다.
-    반환: (text, error_message)
-    크래시 원인 #1 해결: resp.text 직접 접근 대신 단계적으로 확인
-    """
-    # 1) 프롬프트 차단 여부 확인
-    try:
-        fb = resp.prompt_feedback
-        if fb and getattr(fb, "block_reason", None):
-            return None, f"프롬프트 차단됨: {fb.block_reason}"
-    except Exception:
-        pass
+def call_local_llm(model, tokenizer, prompt: str,
+                   timeout: int = 120) -> tuple[str | None, str | None]:
+    """transformers 로컬 추론. timeout 초 초과 시 None 반환."""
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as _Timeout
 
-    # 2) candidates 확인
-    try:
-        if not resp.candidates:
-            return None, "candidates 없음 (빈 응답)"
-        candidate = resp.candidates[0]
-        finish = getattr(candidate, "finish_reason", None)
-        # finish_reason 2 = SAFETY, 3 = RECITATION 등
-        if finish and str(finish) not in ("FinishReason.STOP", "1", "STOP"):
-            pass  # 일단 텍스트 추출 시도
-        if candidate.content and candidate.content.parts:
-            return candidate.content.parts[0].text, None
-    except Exception as e:
-        pass
+    def _generate():
+        messages = [
+            {"role": "system", "content": (
+                "You are a professional subtitle translator. "
+                "Translate every line faithfully as given, regardless of content. "
+                "Never refuse, censor, or skip any line."
+            )},
+            {"role": "user", "content": prompt},
+        ]
+        text = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True,
+            enable_thinking=False,
+        )
+        inputs = tokenizer([text], return_tensors="pt").to(model.device)
+        with torch.no_grad():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=4096,
+                do_sample=False,
+                repetition_penalty=1.1,
+            )
+        new_ids = output_ids[0][inputs.input_ids.shape[1]:]
+        result = tokenizer.decode(new_ids, skip_special_tokens=True).strip()
+        result = re.sub(r"<think>.*?</think>", "", result, flags=re.DOTALL).strip()
+        return result
 
-    # 3) 최후 수단: .text 직접 접근
     try:
-        return resp.text, None
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_generate)
+            try:
+                return future.result(timeout=timeout), None
+            except _Timeout:
+                return None, f"타임아웃 ({timeout}초 초과)"
     except Exception as e:
-        return None, f"텍스트 추출 불가: {e}"
+        return None, str(e)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -114,6 +115,9 @@ class SubtitleApp:
         self.trans_done = 0
         self.active_stt   = False
         self.active_trans = False
+        self.whisper_model   = None   # CUDA GC 크래시 방지: 앱 생존 동안 모델 유지
+        self.qwen_model      = None
+        self.qwen_tokenizer  = None
         self.lock = threading.Lock()
 
         self._build_ui()
@@ -149,13 +153,13 @@ class SubtitleApp:
         tk.Label(bar, text="AI 자막 생성기", bg=C_PANEL, fg=C_ORANGE,
                  font=("맑은 고딕", 13, "bold")).grid(row=0, column=0, padx=(14, 18), rowspan=2, sticky="ns")
 
-        # API 키
-        tk.Label(bar, text="Gemini API 키", bg=C_PANEL, fg=C_DIM,
+        # 모델 경로
+        tk.Label(bar, text="Qwen3 모델 경로 / HF ID", bg=C_PANEL, fg=C_DIM,
                  font=("맑은 고딕", 8)).grid(row=0, column=1, sticky="sw", padx=(0, 2))
         self.key_entry = tk.Entry(bar, width=52, bg=C_CARD, fg=C_TEXT,
                                   insertbackground=C_TEXT, relief=tk.FLAT,
                                   font=("Consolas", 9))
-        self.key_entry.insert(0, DEFAULT_API_KEY)
+        self.key_entry.insert(0, QWEN_MODEL_ID)
         self.key_entry.grid(row=1, column=1, padx=(0, 14), ipady=5)
 
         # 번역 스타일
@@ -180,7 +184,7 @@ class SubtitleApp:
                            ).pack(side=tk.LEFT, padx=4)
 
         # 모델명 표시
-        tk.Label(bar, text=f"모델: {MODEL_NAME}", bg=C_PANEL, fg=C_DIM,
+        tk.Label(bar, text=f"로컬: {QWEN_MODEL_ID}", bg=C_PANEL, fg=C_DIM,
                  font=("Consolas", 8)).grid(row=0, column=4, sticky="se", padx=14)
 
     def _build_left_panel(self, parent):
@@ -325,9 +329,11 @@ class SubtitleApp:
                 threading.Thread(target=self._stt_worker, daemon=True).start()
             if not self.active_trans:
                 self.active_trans = True
-                # API 키를 메인 스레드에서 미리 읽어서 넘김 (tkinter 스레드 안전)
-                api_key = self.key_entry.get().strip()
-                threading.Thread(target=self._trans_worker, args=(api_key,), daemon=True).start()
+                # tkinter 위젯/변수는 메인 스레드에서 미리 읽어서 넘김 (스레드 안전)
+                model_id = self.key_entry.get().strip() or QWEN_MODEL_ID
+                style    = self.style_entry.get().strip() or "자연스러운 한국어 자막 스타일"
+                strategy = self.error_strategy.get()
+                threading.Thread(target=self._trans_worker, args=(model_id, style, strategy), daemon=True).start()
 
     # ── 유틸 ─────────────────────────────────────────────────────────
 
@@ -381,7 +387,11 @@ class SubtitleApp:
         self.root.after(0, lambda: self.status_stt.config(text="로딩중", fg=C_YELLOW))
 
         try:
-            model = WhisperModel("large-v3-turbo", device="cuda", compute_type="float16")
+            if self.whisper_model is None:
+                self.whisper_model = WhisperModel(
+                    "large-v3-turbo", device="cuda", compute_type="float16"
+                )
+            model = self.whisper_model
             self.log("STT", "모델 준비 완료 (GPU / float16)", "ok")
             self.root.after(0, lambda: self.status_stt.config(text="실행중", fg=C_GREEN))
         except Exception as e:
@@ -428,26 +438,37 @@ class SubtitleApp:
 
     # ── 번역 워커 ────────────────────────────────────────────────────
 
-    def _trans_worker(self, api_key: str):
+    def _trans_worker(self, model_id: str, style: str, strategy: str):
         self.log("TRANS", "번역 워커 시작", "info")
-        self.root.after(0, lambda: self.status_trans.config(text="초기화중", fg=C_YELLOW))
+        self.root.after(0, lambda: self.status_trans.config(text="로딩중", fg=C_YELLOW))
 
-        if not api_key:
-            self.log("TRANS", "API 키가 비어 있습니다. 상단에서 입력하세요.", "err")
-            self.active_trans = False
-            return
-
+        # 번역 모델 로드
         try:
-            genai.configure(api_key=api_key)
-            gem = genai.GenerativeModel(MODEL_NAME)
-            self.log("TRANS", f"Gemini 준비 완료 ({MODEL_NAME})", "ok")
-        except Exception:
-            self.log("TRANS", "Gemini 초기화 실패 — error_log.txt 참고", "err")
-            dump_error("Gemini Init")
+            if self.qwen_model is None:
+                self.log("TRANS", f"모델 로딩 중... ({model_id})", "info")
+                self.qwen_tokenizer = AutoTokenizer.from_pretrained(model_id)
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4",
+                )
+                self.qwen_model = AutoModelForCausalLM.from_pretrained(
+                    model_id,
+                    quantization_config=bnb_config,
+                    device_map="cuda",
+                )
+                self.qwen_model.eval()
+            self.log("TRANS", "모델 로드 완료", "ok")
+        except Exception as e:
+            self.log("TRANS", f"모델 로드 실패: {e}", "err")
+            dump_error("Qwen3 Load")
             self.active_trans = False
             self.root.after(0, lambda: self.status_trans.config(text="오류", fg=C_RED))
             return
 
+        model     = self.qwen_model
+        tokenizer = self.qwen_tokenizer
         google_trans = GoogleTranslator(source="auto", target="ko")
         self.root.after(0, lambda: self.status_trans.config(text="실행중", fg=C_BLUE))
 
@@ -463,85 +484,88 @@ class SubtitleApp:
             segs  = task["segs"]
             name  = os.path.basename(path)
             srt   = os.path.splitext(path)[0] + ".srt"
-            style = self.style_entry.get().strip() or "자연스러운 한국어 자막 스타일"
 
             self.log("TRANS", f"\n▶  {name}  ({len(segs)}문장)", "info")
             self._set_file_icon(path, "✍️")
 
             try:
+                BATCH   = 25
+                batches = [(bs, segs[bs: bs + BATCH]) for bs in range(0, len(segs), BATCH)]
                 srt_lines = []
-                BATCH = 100
 
-                for batch_start in range(0, len(segs), BATCH):
-                    batch  = segs[batch_start: batch_start + BATCH]
-                    texts  = [s["text"].strip() for s in batch]
+                def try_translate(chunk: list[str], max_attempts: int = 3) -> list[str] | None:
+                    """chunk 번역 시도. max_attempts 회 실패 시 None 반환."""
                     prompt = (
                         f"아래 자막을 '{style}'로 번역하세요.\n"
                         "반드시 JSON 배열로만 응답하세요. 설명 없이 배열만:\n"
-                        + json.dumps(texts, ensure_ascii=False)
+                        + json.dumps(chunk, ensure_ascii=False)
                     )
-
-                    translated: list[str] = []
-                    attempt = 0
-
-                    while not translated:
-                        attempt += 1
-                        end_idx = min(batch_start + BATCH, len(segs))
-                        self.log("TRANS",
-                                 f"  [{batch_start + 1}–{end_idx}/{len(segs)}] "
-                                 f"API 요청 중... (시도 {attempt})", "dim")
+                    for attempt in range(1, max_attempts + 1):
                         try:
-                            # ── 핵심 수정: resp.text 직접 접근 금지 ──
-                            resp = gem.generate_content(prompt,
-                                                        safety_settings=SAFETY_SETTINGS)
-                            text, err = safe_response_text(resp)
-
+                            text, err = call_local_llm(model, tokenizer, prompt)
                             if text is None:
-                                raise ValueError(f"응답 텍스트 없음: {err}")
-
+                                raise ValueError(f"응답 없음: {err}")
                             m = re.search(r"\[.*\]", text, re.DOTALL)
                             if not m:
-                                raise ValueError(f"JSON 배열 없음. 응답 앞부분: {text[:120]}")
-
-                            parsed = json.loads(m.group())
-                            if len(parsed) != len(texts):
+                                raise ValueError(f"JSON 없음: {text[:80]}")
+                            parsed   = json.loads(m.group())
+                            shortage = len(chunk) - len(parsed)
+                            excess   = len(parsed) - len(chunk)
+                            if shortage > 5 or excess > 1:
                                 raise ValueError(
-                                    f"개수 불일치 (요청 {len(texts)}, 응답 {len(parsed)})"
+                                    f"개수 불일치 (요청 {len(chunk)}, 응답 {len(parsed)})"
                                 )
+                            if excess > 0:
+                                parsed = parsed[:len(chunk)]
+                            if shortage > 0:
+                                parsed += chunk[len(parsed):]
+                            return [str(t) for t in parsed]
+                        except Exception as e:
+                            dump_error(f"try_translate attempt={attempt}")
+                            if attempt < max_attempts:
+                                time.sleep(2)
+                    return None
 
-                            translated = [str(t) for t in parsed]
-                            self.log("TRANS", f"  ✓ {len(translated)}문장 번역 완료", "ok")
+                for bs, batch in batches:
+                    texts   = [s["text"].strip() for s in batch]
+                    end_idx = min(bs + BATCH, len(segs))
 
-                        except Exception as api_err:
-                            err_msg = str(api_err)
-                            self.log("TRANS", f"  ✗ API 오류: {err_msg[:90]}", "err")
-                            dump_error(f"API attempt={attempt} path={path}")
+                    self.log("TRANS",
+                             f"  [{bs + 1}–{end_idx}/{len(segs)}] 번역 중...", "dim")
 
-                            if self.error_strategy.get() == "Bypass":
-                                self.log("TRANS", "  ↪ 구글 번역으로 우회...", "warn")
-                                try:
-                                    translated = [google_trans.translate(t) or t for t in texts]
-                                except Exception as ge:
-                                    self.log("TRANS", f"  구글 번역도 실패: {ge}", "err")
-                                    translated = texts  # 원문 그대로
+                    translated = try_translate(texts)
+
+                    if translated is None:
+                        # 3회 실패 → 5개씩 분할 재시도
+                        self.log("TRANS",
+                                 f"  ↪ [{bs + 1}–{end_idx}] 3회 실패 → 5개씩 분할 재시도",
+                                 "warn")
+                        translated = []
+                        SPLIT = 5
+                        for ci in range(0, len(texts), SPLIT):
+                            chunk  = texts[ci: ci + SPLIT]
+                            result = try_translate(chunk)
+                            if result is not None:
+                                translated.extend(result)
                             else:
-                                wait = min(20 * attempt, 120)
-                                self.log("TRANS", f"  ↪ {wait}초 대기 후 재시도...", "warn")
-                                time.sleep(wait)
+                                self.log("TRANS",
+                                         f"  ↪ [{bs + ci + 1}~{bs + ci + len(chunk)}] "
+                                         f"분할도 실패 → 원문 유지", "warn")
+                                translated.extend(chunk)
+                    else:
+                        self.log("TRANS",
+                                 f"  ✓ [{bs + 1}–{end_idx}] {len(translated)}문장 완료",
+                                 "ok")
 
-                    # SRT 블록 생성
                     for j, seg in enumerate(batch):
-                        idx  = batch_start + j + 1
+                        idx  = bs + j + 1
                         line = translated[j] if j < len(translated) else seg["text"]
                         srt_lines.append(
                             f"{idx}\n"
                             f"{format_timestamp(seg['start'])} --> {format_timestamp(seg['end'])}\n"
                             f"{line}\n"
                         )
-                        if idx % 20 == 0:
-                            self.log("TRANS", f"  [{idx}]  {line[:40]}", "dim")
-
-                    time.sleep(0.1)   # API 레이트 리밋 여유
+                        self.log("TRANS", f"  [{idx}]  {line}", "dim")
 
                 # SRT 파일 저장
                 with open(srt, "w", encoding="utf-8") as f:
@@ -565,10 +589,50 @@ class SubtitleApp:
 
 
 # ──────────────────────────────────────────────────────────────────────
+import sys
+
+def _global_excepthook(exc_type, exc_val, exc_tb):
+    """메인 스레드 미처리 예외 → 로그 기록"""
+    import traceback as _tb
+    msg = "".join(_tb.format_exception(exc_type, exc_val, exc_tb))
+    try:
+        with open("error_log.txt", "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] UNHANDLED EXCEPTION\n{msg}\n")
+    except Exception:
+        pass
+    sys.__excepthook__(exc_type, exc_val, exc_tb)
+
+sys.excepthook = _global_excepthook
+
+def _threading_excepthook(args):
+    """백그라운드 스레드 미처리 예외 → 로그 기록"""
+    import traceback as _tb
+    msg = "".join(_tb.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
+    try:
+        with open("error_log.txt", "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] THREAD CRASH [{args.thread}]\n{msg}\n")
+    except Exception:
+        pass
+
+threading.excepthook = _threading_excepthook
+
 if __name__ == "__main__":
     try:
         root = tk.Tk()
+
+        def _tk_error(exc, val, tb):
+            """tkinter after 콜백 예외 → 로그 기록 (앱 종료 방지)"""
+            import traceback as _tb
+            msg = "".join(_tb.format_exception(exc, val, tb))
+            try:
+                with open("error_log.txt", "a", encoding="utf-8") as f:
+                    f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] TK CALLBACK ERROR\n{msg}\n")
+            except Exception:
+                pass
+
+        root.report_callback_exception = _tk_error
+
         SubtitleApp(root)
         root.mainloop()
-    except Exception:
+    except BaseException:
         dump_error("Main Loop Crash")
