@@ -1,8 +1,8 @@
 ;;; ============================================================
-;;; BLKSWITCH.LSP
+;;; BLKSWITCH.LSP  (3D 대응)
 ;;; 화면 클릭으로 가장 가까운 블럭을 선택하고
 ;;; A : 왼쪽으로 늘리기   S : 왼쪽에서 줄이기
-;;; F : 오른쪽으로 늘리기  D : 오른쪽에서 줄이기
+;;; D : 오른쪽에서 줄이기  F : 오른쪽으로 늘리기
 ;;; ESC / Space / Enter : 종료
 ;;; ============================================================
 
@@ -34,8 +34,8 @@
         best-dist 1e38
         r (max (/ (getvar "VIEWSIZE") 20.0) 1e-6))
   (while (and (not best-ent) (< r 1e15))
-    (setq p1 (list (- (car pt) r) (- (cadr pt) r) 0.0)
-          p2 (list (+ (car pt) r) (+ (cadr pt) r) 0.0)
+    (setq p1 (list (- (car pt) r) (- (cadr pt) r))
+          p2 (list (+ (car pt) r) (+ (cadr pt) r))
           ss (ssget "_C" p1 p2 '((0 . "INSERT"))))
     (if ss
       (progn
@@ -49,103 +49,128 @@
       (setq r (* r 10))))
   best-ent)
 
-(defun BSW:get-corners (ent / obj minpt maxpt mn mx)
+;;; 바운딩 박스 반환: (list mn mx)  mn/mx 는 (x y z) 리스트
+(defun BSW:get-bbox (ent / obj minpt maxpt)
   (setq obj (vlax-ename->vla-object ent))
   (if (not (vl-catch-all-error-p
              (vl-catch-all-apply 'vla-getboundingbox
                                  (list obj 'minpt 'maxpt))))
-    (progn
-      (setq mn (vlax-safearray->list minpt)
-            mx (vlax-safearray->list maxpt))
-      (list
-        (list (car mn) (cadr mn) 0.0)
-        (list (car mx) (cadr mn) 0.0)
-        (list (car mx) (cadr mx) 0.0)
-        (list (car mn) (cadr mx) 0.0)))
+    (list (vlax-safearray->list minpt)
+          (vlax-safearray->list maxpt))
     nil))
 
-(defun BSW:draw-rect (pts color)
-  (if pts
+;;; 직육면체 12개 엣지를 grdraw XOR 로 그리기 / 지우기
+(defun BSW:draw-box (bbox color / mn mx
+                     p1 p2 p3 p4 p5 p6 p7 p8)
+  (if bbox
     (progn
-      (grdraw (nth 0 pts) (nth 1 pts) color 1)
-      (grdraw (nth 1 pts) (nth 2 pts) color 1)
-      (grdraw (nth 2 pts) (nth 3 pts) color 1)
-      (grdraw (nth 3 pts) (nth 0 pts) color 1))))
+      (setq mn (car bbox)  mx (cadr bbox))
+      ;;  아래 4개 꼭짓점 (min-z)
+      (setq p1 (list (car mn) (cadr mn) (caddr mn))
+            p2 (list (car mx) (cadr mn) (caddr mn))
+            p3 (list (car mx) (cadr mx) (caddr mn))
+            p4 (list (car mn) (cadr mx) (caddr mn)))
+      ;;  위 4개 꼭짓점 (max-z)
+      (setq p5 (list (car mn) (cadr mn) (caddr mx))
+            p6 (list (car mx) (cadr mn) (caddr mx))
+            p7 (list (car mx) (cadr mx) (caddr mx))
+            p8 (list (car mn) (cadr mx) (caddr mx)))
+      ;; 아랫면
+      (grdraw p1 p2 color 1)
+      (grdraw p2 p3 color 1)
+      (grdraw p3 p4 color 1)
+      (grdraw p4 p1 color 1)
+      ;; 윗면
+      (grdraw p5 p6 color 1)
+      (grdraw p6 p7 color 1)
+      (grdraw p7 p8 color 1)
+      (grdraw p8 p5 color 1)
+      ;; 수직 엣지 4개
+      (grdraw p1 p5 color 1)
+      (grdraw p2 p6 color 1)
+      (grdraw p3 p7 color 1)
+      (grdraw p4 p8 color 1))))
 
-;;; 블럭 교체 + 한쪽 끝 고정
-;;; anchor 'L = 왼쪽 고정(오른쪽 변화)  'R = 오른쪽 고정(왼쪽 변화)
+;;; 블럭 교체 + 한쪽 끝 고정 (3D 대응)
+;;; anchor 'L = 작은좌표쪽 고정  'R = 큰좌표쪽 고정
+;;; 블럭이 X/Y/Z 어느 방향으로 놓여도 변화한 축을 자동으로 감지해 삽입점 이동
 (defun BSW:switch-anchored (ent new-name anchor
-                            / obj ins ins-z omn omx nmn nmx
-                              old-mn old-mx new-mn new-mx delta)
+                            / obj ins ins-x ins-y ins-z
+                              omn omx nmn nmx
+                              old-mn old-mx new-mn new-mx
+                              dx dy dz)
   (setq obj (vlax-ename->vla-object ent))
 
-  ; 교체 전 바운딩 박스
+  ;; 교체 전 bbox
   (vla-getboundingbox obj 'omn 'omx)
   (setq old-mn (vlax-safearray->list omn)
         old-mx (vlax-safearray->list omx))
 
-  ; 블럭 이름 교체
+  ;; 블럭 이름 교체
   (vla-put-name obj new-name)
   (vla-update obj)
 
-  ; 교체 후 바운딩 박스 (삽입점 그대로인 상태)
+  ;; 교체 후 bbox (삽입점은 아직 원래 위치)
   (vla-getboundingbox obj 'nmn 'nmx)
   (setq new-mn (vlax-safearray->list nmn)
         new-mx (vlax-safearray->list nmx))
 
-  ; 고정 기준에 따라 삽입점 X 이동량 계산
-  (setq delta
-    (if (= anchor 'R)
-      (- (car old-mx) (car new-mx))   ; 오른쪽 끝 고정
-      (- (car old-mn) (car new-mn)))) ; 왼쪽 끝 고정
+  ;; 고정 끝 기준으로 각 축의 이동량 계산
+  ;; 블럭 형상이 같고 길이만 다르므로 변화한 축에만 delta 가 생김
+  (if (= anchor 'R)
+    (setq dx (- (car   old-mx) (car   new-mx))
+          dy (- (cadr  old-mx) (cadr  new-mx))
+          dz (- (caddr old-mx) (caddr new-mx)))
+    (setq dx (- (car   old-mn) (car   new-mn))
+          dy (- (cadr  old-mn) (cadr  new-mn))
+          dz (- (caddr old-mn) (caddr new-mn))))
 
-  ; 삽입점 이동
+  ;; 삽입점 이동
   (setq ins   (cdr (assoc 10 (entget ent)))
+        ins-x (car   ins)
+        ins-y (cadr  ins)
         ins-z (if (caddr ins) (caddr ins) 0.0))
   (vla-put-insertionpoint obj
-    (vlax-3d-point (list (+ (car ins) delta) (cadr ins) ins-z)))
+    (vlax-3d-point (list (+ ins-x dx)
+                         (+ ins-y dy)
+                         (+ ins-z dz))))
   (vla-update obj))
 
 (defun BSW:print-status (name idx arrow)
   (princ (strcat "\n  " arrow "  " name
                  "  [" (itoa (1+ idx)) "/" (itoa (length *BSW:list*)) "]")))
 
-;; ============================================================
-;; 공통 키 처리 (방향 + 앵커)
-;; dir  1 = 다음(길어짐)  -1 = 이전(짧아짐)
-;; anchor 'L or 'R
-;; ============================================================
-(defun BSW:do-switch (sel-ent rect-pts dir anchor arrow
-                      / cur-idx new-idx new-name)
+;;; 공통 교체 처리 - bbox 를 반환
+(defun BSW:do-switch (sel-ent dir anchor arrow / cur-idx new-idx new-name new-bbox)
   (setq cur-idx (BSW:index-of (cdr (assoc 2 (entget sel-ent))) *BSW:list*))
   (cond
     ((= cur-idx -1)
      (princ "\n  선택한 블럭이 목록에 없습니다.")
-     rect-pts) ; rect-pts 변경 없이 반환
+     nil)
     ((and (= dir  1) (>= cur-idx (1- (length *BSW:list*))))
      (princ "\n  이미 마지막 블럭입니다.")
-     rect-pts)
+     nil)
     ((and (= dir -1) (<= cur-idx 0))
      (princ "\n  이미 첫 번째 블럭입니다.")
-     rect-pts)
+     nil)
     (T
      (setq new-idx  (+ cur-idx dir)
            new-name (nth new-idx *BSW:list*))
      (BSW:switch-anchored sel-ent new-name anchor)
      (redraw)
-     (setq rect-pts (BSW:get-corners sel-ent))
-     (BSW:draw-rect rect-pts *BSW:color*)
+     (setq new-bbox (BSW:get-bbox sel-ent))
+     (BSW:draw-box new-bbox *BSW:color*)
      (BSW:print-status new-name new-idx arrow)
-     rect-pts)))
+     new-bbox)))
 
 ;; ============================================================
 ;; 메인 명령 : BS
 ;; ============================================================
 
-(defun C:BS ( / sel-ent rect-pts grtype grval done)
+(defun C:BS ( / sel-ent cur-bbox grtype grval done result)
 
   (setq sel-ent  nil
-        rect-pts nil
+        cur-bbox nil
         done     nil)
 
   (princ "\n[BS]  클릭:선택  A:왼쪽늘리기  S:왼쪽줄이기  D:오른쪽줄이기  F:오른쪽늘리기  Space/ESC:종료")
@@ -163,7 +188,7 @@
       ;; 마우스 클릭
       ((= grtype 3)
        (redraw)
-       (setq rect-pts nil sel-ent nil)
+       (setq cur-bbox nil sel-ent nil)
        (setq sel-ent (BSW:find-nearest grval))
        (cond
          ((not sel-ent)
@@ -172,8 +197,8 @@
           (princ (strcat "\n  '" (cdr (assoc 2 (entget sel-ent))) "' 은(는) 목록에 없습니다."))
           (setq sel-ent nil))
          (T
-          (setq rect-pts (BSW:get-corners sel-ent))
-          (BSW:draw-rect rect-pts *BSW:color*)
+          (setq cur-bbox (BSW:get-bbox sel-ent))
+          (BSW:draw-box cur-bbox *BSW:color*)
           (BSW:print-status
             (cdr (assoc 2 (entget sel-ent)))
             (BSW:index-of (cdr (assoc 2 (entget sel-ent))) *BSW:list*)
@@ -188,19 +213,23 @@
 
          ;; A : 왼쪽 늘리기 (다음 블럭 + 오른쪽 고정)
          ((member grval '(65 97))
-          (setq rect-pts (BSW:do-switch sel-ent rect-pts 1 'R "<- 늘리기")))
+          (setq result (BSW:do-switch sel-ent 1 'R "<- 늘리기"))
+          (if result (setq cur-bbox result)))
 
          ;; S : 왼쪽 줄이기 (이전 블럭 + 오른쪽 고정)
          ((member grval '(83 115))
-          (setq rect-pts (BSW:do-switch sel-ent rect-pts -1 'R "-> 줄이기")))
+          (setq result (BSW:do-switch sel-ent -1 'R "-> 줄이기"))
+          (if result (setq cur-bbox result)))
 
          ;; D : 오른쪽 줄이기 (이전 블럭 + 왼쪽 고정)
          ((member grval '(68 100))
-          (setq rect-pts (BSW:do-switch sel-ent rect-pts -1 'L "<- 줄이기")))
+          (setq result (BSW:do-switch sel-ent -1 'L "<- 줄이기"))
+          (if result (setq cur-bbox result)))
 
          ;; F : 오른쪽 늘리기 (다음 블럭 + 왼쪽 고정)
          ((member grval '(70 102))
-          (setq rect-pts (BSW:do-switch sel-ent rect-pts 1 'L "-> 늘리기")))
+          (setq result (BSW:do-switch sel-ent 1 'L "-> 늘리기"))
+          (if result (setq cur-bbox result)))
 
          ;; ESC / Space / Enter : 종료
          ((member grval '(27 32 13))
