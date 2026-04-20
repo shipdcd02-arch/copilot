@@ -8,6 +8,10 @@
 
 (vl-load-com)
 
+;; ★★ 하이라이트 색상 (AutoCAD 색상 번호) ★★
+;; 1=빨강  2=노랑  3=초록  4=하늘  5=파랑  6=보라  7=흰색
+(setq *BSW:color* 3)
+
 ;; ★★ 사용할 블럭 목록 - 여기를 수정하세요 ★★
 (setq *BSW:list*
   '("BLOCK_A"
@@ -89,13 +93,13 @@
 ;; 메인 명령 : BLKSWITCH
 ;; ============================================================
 
-(defun C:BLKSWITCH ( / sel-ent rect-pts grtype grval cur-idx new-idx new-name done)
+(defun C:BS ( / sel-ent rect-pts grtype grval cur-idx new-idx new-name done)
 
   (setq sel-ent  nil
         rect-pts nil
         done     nil)
 
-  (princ "\n[BLKSWITCH]  클릭:선택  A:이전  D:다음  ESC:종료")
+  (princ "\n[BS]  클릭:선택  A:이전  D:다음  ESC/Space/Enter:종료")
   (princ (strcat "\n  목록: "
                  (apply 'strcat
                         (mapcar '(lambda (b) (strcat b " ")) *BSW:list*))))
@@ -111,7 +115,7 @@
 
       ;; 마우스 클릭 : 가장 가까운 블럭 선택
       ((= grtype 3)
-       (if rect-pts (BSW:draw-rect rect-pts 3))   ; 기존 테두리 XOR 지우기
+       (if rect-pts (BSW:draw-rect rect-pts *BSW:color*))   ; 기존 테두리 XOR 지우기
        (setq rect-pts nil sel-ent nil)
 
        (setq sel-ent (BSW:find-nearest grval))
@@ -126,7 +130,7 @@
 
          (T
           (setq rect-pts (BSW:get-corners sel-ent))
-          (BSW:draw-rect rect-pts 3)
+          (BSW:draw-rect rect-pts *BSW:color*)
           (BSW:print-status
             (cdr (assoc 2 (entget sel-ent)))
             (BSW:index-of (cdr (assoc 2 (entget sel-ent))) *BSW:list*)
@@ -151,7 +155,7 @@
                 (BSW:set-name sel-ent new-name)  ; 블럭 교체 (내부적으로 화면 재렌더링)
                 (redraw)                          ; grdraw 전부 제거 후 새로 시작
                 (setq rect-pts (BSW:get-corners sel-ent))
-                (BSW:draw-rect rect-pts 3)
+                (BSW:draw-rect rect-pts *BSW:color*)
                 (BSW:print-status new-name new-idx "<-"))))))
 
          ;; D / d : 다음 블럭
@@ -169,12 +173,12 @@
                 (BSW:set-name sel-ent new-name)  ; 블럭 교체 (내부적으로 화면 재렌더링)
                 (redraw)                          ; grdraw 전부 제거 후 새로 시작
                 (setq rect-pts (BSW:get-corners sel-ent))
-                (BSW:draw-rect rect-pts 3)
+                (BSW:draw-rect rect-pts *BSW:color*)
                 (BSW:print-status new-name new-idx "->"))))))
 
-         ;; ESC : 종료
-         ((= grval 27)
-          (if rect-pts (BSW:draw-rect rect-pts 3))
+         ;; ESC / 스페이스바 / 엔터 : 종료
+         ((member grval '(27 32 13))
+          (if rect-pts (BSW:draw-rect rect-pts *BSW:color*))
           (setq done T)
           (princ "\n  종료.\n"))
 
@@ -185,5 +189,5 @@
 
   (princ))
 
-(princ "\nBLKSWITCH 로드 완료 - 명령어: BLKSWITCH")
+(princ "\nBLKSWITCH 로드 완료 - 명령어: BS")
 (princ)
