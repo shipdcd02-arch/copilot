@@ -27,21 +27,26 @@
     (setq lst (cdr lst) i (1+ i)))
   (if lst i -1))
 
-;;; 점 pt 에서 가장 가까운 INSERT 엔티티 반환
-(defun BSW:find-nearest (pt / ss i ent ep dist best-ent best-dist)
-  (setq ss        (ssget "_X" '((0 . "INSERT")))
-        best-ent  nil
-        best-dist 1e38)
-  (if ss
-    (progn
-      (setq i 0)
-      (while (< i (sslength ss))
-        (setq ent  (ssname ss i)
-              ep   (cdr (assoc 10 (entget ent)))
-              dist (distance pt ep))
-        (if (< dist best-dist)
-          (setq best-dist dist best-ent ent))
-        (setq i (1+ i)))))
+;;; 점 pt 주변 윈도우에서 가장 가까운 INSERT 반환 (점점 확장)
+(defun BSW:find-nearest (pt / ss i ent ep dist best-ent best-dist r p1 p2)
+  (setq best-ent  nil
+        best-dist 1e38
+        ; 초기 반경: 현재 뷰 높이의 5% (화면 크기에 비례)
+        r (max (/ (getvar "VIEWSIZE") 20.0) 1e-6))
+  (while (and (not best-ent) (< r 1e15))
+    (setq p1 (list (- (car pt) r) (- (cadr pt) r) 0.0)
+          p2 (list (+ (car pt) r) (+ (cadr pt) r) 0.0)
+          ss (ssget "_C" p1 p2 '((0 . "INSERT"))))
+    (if ss
+      (progn
+        (setq i 0)
+        (while (< i (sslength ss))
+          (setq ent  (ssname ss i)
+                ep   (cdr (assoc 10 (entget ent)))
+                dist (distance pt ep))
+          (if (< dist best-dist) (setq best-dist dist best-ent ent))
+          (setq i (1+ i))))
+      (setq r (* r 10)))) ; 없으면 반경 10배 확장
   best-ent)
 
 ;;; 블럭의 화면상 바운딩 박스 꼭짓점 4개 반환
