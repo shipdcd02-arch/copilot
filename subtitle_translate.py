@@ -15,6 +15,8 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as _Timeout
 
 # ── 설정 ──────────────────────────────────────────────────────────────
 MODEL_ID = r"C:\Users\yoonk\Desktop\LLM models\qwen3.5-9b"
+FOLDER   = r""   # 비워두면 GUI 모드, 경로 지정 시 백그라운드 자동 실행
+STYLE    = "자연스러운 한국어 영화 자막 스타일"
 BATCH    = 25
 TIMEOUT  = 120   # 초
 
@@ -341,6 +343,15 @@ class TranslateApp:
                 break
 
             name = os.path.basename(path)
+
+            if os.path.exists(out_path(path)):
+                self.log(f"\n⏭  {name} — 번역 파일 이미 존재, 건너뜀", "warn")
+                self._icon(path, "⏭️")
+                with self.lock:
+                    self.done += 1
+                self._refresh()
+                continue
+
             self.log(f"\n▶  {name}", "info")
             self._icon(path, "✍️")
 
@@ -479,8 +490,125 @@ class TranslateApp:
         self.root.after(80, self._poll_logs)
 
 
+# ── 헤드리스 모드 ─────────────────────────────────────────────────────
+def headless_run(folder: str, model_id: str = MODEL_ID, style: str = STYLE):
+    def log(msg: str):
+        print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+    paths = [
+        os.path.join(r, f)
+        for r, _, fs in os.walk(folder)
+        for f in fs if f.lower().endswith('_번역전.srt')
+    ]
+    if not paths:
+        log("번역전 SRT 파일이 없습니다.")
+        return
+
+    log(f"{len(paths)}개 파일 발견 — 모델 로딩 중...")
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    bnb = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id, quantization_config=bnb, device_map="cuda"
+    )
+    model.eval()
+    log("모델 로드 완료")
+
+    for i, path in enumerate(paths, 1):
+        name = os.path.basename(path)
+        dest = out_path(path)
+
+        if os.path.exists(dest):
+            log(f"[{i}/{len(paths)}] 건너뜀 (이미 존재): {name}")
+            continue
+
+        log(f"[{i}/{len(paths)}] 번역 시작: {name}")
+        try:
+            with open(path, encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            segments = parse_srt(content)
+            if not segments:
+                log(f"  SRT 파싱 실패 — 건너뜀")
+                continue
+
+            texts   = [s['text'] for s in segments]
+            batches = [(j, texts[j:j+BATCH]) for j in range(0, len(texts), BATCH)]
+            results: list[str] = []
+
+            def try_translate(chunk: list[str], max_try: int = 3) -> list[str] | None:
+                prompt = (
+                    f"아래 자막을 '{style}'로 번역하세요.\n"
+                    "반드시 JSON 배열로만 응답하세요. 설명 없이 배열만:\n"
+                    + json.dumps(chunk, ensure_ascii=False)
+                )
+                for attempt in range(1, max_try + 1):
+                    try:
+                        text, err = call_llm(model, tokenizer, prompt)
+                        if text is None:
+                            raise ValueError(err)
+                        m = re.search(r"\[.*\]", text, re.DOTALL)
+                        if not m:
+                            raise ValueError(f"JSON 없음: {text[:80]}")
+                        parsed   = json.loads(m.group())
+                        shortage = len(chunk) - len(parsed)
+                        excess   = len(parsed) - len(chunk)
+                        if shortage > 5 or excess > 1:
+                            raise ValueError(
+                                f"개수 불일치 (요청 {len(chunk)}, 응답 {len(parsed)})"
+                            )
+                        if excess > 0:
+                            parsed = parsed[:len(chunk)]
+                        if shortage > 0:
+                            parsed += chunk[len(parsed):]
+                        return [str(t) for t in parsed]
+                    except Exception:
+                        dump_error(f"headless try_translate attempt={attempt}")
+                        if attempt < max_try:
+                            time.sleep(2)
+                return None
+
+            for bs, chunk in batches:
+                end_idx = bs + len(chunk)
+                log(f"  [{bs+1}–{end_idx}/{len(texts)}] 번역 중...")
+                translated = try_translate(chunk)
+                if translated is None:
+                    log(f"  ↪ 3회 실패 → 5개씩 분할 재시도")
+                    translated = []
+                    for ci in range(0, len(chunk), 5):
+                        sub    = chunk[ci:ci+5]
+                        result = try_translate(sub)
+                        if result is not None:
+                            translated.extend(result)
+                        else:
+                            log(f"  ↪ [{bs+ci+1}~{bs+ci+len(sub)}] 분할도 실패 → 원문")
+                            translated.extend(sub)
+                else:
+                    log(f"  ✓ [{bs+1}–{end_idx}] {len(translated)}문장 완료")
+                results.extend(translated)
+
+            with open(dest, "w", encoding="utf-8") as f:
+                for seg, trans in zip(segments, results):
+                    f.write(f"{seg['idx']}\n")
+                    f.write(f"{seg['start']} --> {seg['end']}\n")
+                    f.write(f"{trans}\n\n")
+            log(f"  저장 완료: {os.path.basename(dest)}")
+
+        except Exception:
+            log("  치명적 오류 — translate_error.txt 참고")
+            dump_error(f"Fatal headless: {path}")
+
+    log("전체 번역 완료")
+
+
 # ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    root = TkinterDnD.Tk()
-    TranslateApp(root)
-    root.mainloop()
+    if FOLDER:
+        headless_run(FOLDER)
+    else:
+        root = TkinterDnD.Tk()
+        TranslateApp(root)
+        root.mainloop()
