@@ -208,6 +208,23 @@
   (vla-put-insertionpoint obj (vlax-3d-point (BSW:vec+ ins3 (BSW:vec* mm ldir))))
   (vla-update obj))
 
+;;; 화면 위/아래 방향으로 mm 이동 (뷰 기준 Y축)
+(defun BSW:move-updown (ent mm / obj view-y ins3)
+  (setq obj    (vlax-ename->vla-object ent)
+        view-y (trans '(0.0 1.0 0.0) 2 0 T)   ; DCS Y → WCS (화면 위 방향)
+        ins3   (trans (cdr (assoc 10 (entget ent))) ent 0))
+  (vla-put-insertionpoint obj (vlax-3d-point (BSW:vec+ ins3 (BSW:vec* mm view-y))))
+  (vla-update obj))
+
+;;; 블럭 회전 (도 단위 / 양수=반시계 / 음수=시계)
+;;; AutoCAD rotation = 블럭 normal 축 기준 CCW 각도 (라디안)
+(defun BSW:rotate-block (ent deg / obj cur-rot)
+  (setq obj     (vlax-ename->vla-object ent)
+        cur-rot (if (assoc 50 (entget ent))
+                  (cdr (assoc 50 (entget ent))) 0.0))
+  (vla-put-rotation obj (+ cur-rot (* deg (/ pi 180.0))))
+  (vla-update obj))
+
 (defun BSW:print-status (name idx arrow)
   (princ (strcat "\n  " arrow "  " name
                  "  [" (itoa (1+ idx)) "/" (itoa (length *BSW:list*)) "]")))
@@ -237,13 +254,30 @@
   (princ (strcat "\n  " label "  " (rtos (abs mm) 2 0) "mm"))
   new-obb)
 
+(defun BSW:do-updown (sel-ent mm label / new-obb)
+  (BSW:move-updown sel-ent mm)
+  (redraw)
+  (setq new-obb (BSW:get-obb sel-ent))
+  (BSW:draw-obb new-obb *BSW:color*)
+  (princ (strcat "\n  " label "  " (rtos (abs mm) 2 0) "mm"))
+  new-obb)
+
+(defun BSW:do-rotate (sel-ent deg label / new-obb)
+  (BSW:rotate-block sel-ent deg)
+  (redraw)
+  (setq new-obb (BSW:get-obb sel-ent))
+  (BSW:draw-obb new-obb *BSW:color*)
+  (princ (strcat "\n  " label))
+  new-obb)
+
 ;; ============================================================
 ;; 메인 명령 : BS
 ;; ============================================================
 (defun C:BS ( / sel-ent cur-obb grtype grval done result)
   (setq sel-ent nil cur-obb nil done nil)
 
-  (princ "\n[BS]  클릭:선택  A:왼늘  S:왼줄  D:오줄  F:오늘  Z:←500  X:←100  C:→100  V:→500  Space/ESC:종료")
+  (princ "\n[BS]  클릭:선택  A:왼늘  S:왼줄  D:오줄  F:오늘")
+  (princ "\n      Z:←500  X:←100  C:→100  V:→500  W:↑100  E:↓100  Q:CCW10  R:CW10  Space/ESC:종료")
   (princ (strcat "\n  목록: "
                  (apply 'strcat (mapcar '(lambda (b) (strcat b "  ")) *BSW:list*))))
 
@@ -308,6 +342,22 @@
          ;; V : →500mm
          ((member grval '(86 118))
           (setq result (BSW:do-move sel-ent 500 "-> 500mm"))
+          (if result (setq cur-obb result)))
+         ;; W : 화면 위로 100mm
+         ((member grval '(87 119))
+          (setq result (BSW:do-updown sel-ent 100 "↑ 100mm"))
+          (if result (setq cur-obb result)))
+         ;; E : 화면 아래로 100mm
+         ((member grval '(69 101))
+          (setq result (BSW:do-updown sel-ent -100 "↓ 100mm"))
+          (if result (setq cur-obb result)))
+         ;; Q : 반시계 10도 회전
+         ((member grval '(81 113))
+          (setq result (BSW:do-rotate sel-ent 10 "CCW 10deg"))
+          (if result (setq cur-obb result)))
+         ;; R : 시계 10도 회전
+         ((member grval '(82 114))
+          (setq result (BSW:do-rotate sel-ent -10 "CW 10deg"))
           (if result (setq cur-obb result)))
          ;; ESC / Space / Enter
          ((member grval '(27 32 13))
