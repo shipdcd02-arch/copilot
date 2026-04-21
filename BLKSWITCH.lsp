@@ -76,7 +76,6 @@
                          corners cx cy cz)
   (setq ed     (entget ent)
         obj    (vlax-ename->vla-object ent)
-        ins3   (vlax-safearray->list (vla-get-insertionpoint obj)) ; 항상 WCS
         normal (if (assoc 210 ed) (cdr (assoc 210 ed)) '(0.0 0.0 1.0))
         rot    (if (assoc 50  ed) (cdr (assoc 50  ed)) 0.0))
 
@@ -99,6 +98,9 @@
 
   ;; 원상복구 (화면 갱신 없음)
   (entmod ed)
+
+  ;; WCS 삽입점: 엔티티 OCS → WCS 변환 (trans + 엔티티명)
+  (setq ins3 (trans (cdr (assoc 10 ed)) ent 0))
 
   ;; 실제 local 축
   (setq axes (BSW:local-axes ent)
@@ -163,9 +165,8 @@
     (if ss
       (progn (setq i 0)
         (while (< i (sslength ss))
-          (setq ent (ssname ss i)
-                ep  (vlax-safearray->list          ; 삽입점 WCS로 가져옴
-                      (vla-get-insertionpoint (vlax-ename->vla-object ent)))
+          (setq ent  (ssname ss i)
+                ep   (trans (cdr (assoc 10 (entget ent))) ent 0) ; OCS → WCS
                 dist (distance pt ep))
           (if (< dist best-dist) (setq best-dist dist best-ent ent))
           (setq i (1+ i))))
@@ -195,7 +196,7 @@
           new-proj (BSW:proj-min new-obb ldir)))
 
   (setq delta (- old-proj new-proj)
-        ins3  (vlax-safearray->list (vla-get-insertionpoint obj))) ; WCS
+        ins3  (trans (cdr (assoc 10 (entget ent))) ent 0)) ; OCS → WCS
   (vla-put-insertionpoint obj (vlax-3d-point (BSW:vec+ ins3 (BSW:vec* delta ldir))))
   (vla-update obj))
 
@@ -203,7 +204,7 @@
 (defun BSW:move-block (ent mm / obj ldir ins3)
   (setq obj  (vlax-ename->vla-object ent)
         ldir (BSW:get-length-dir ent)
-        ins3 (vlax-safearray->list (vla-get-insertionpoint obj))) ; WCS
+        ins3 (trans (cdr (assoc 10 (entget ent))) ent 0)) ; OCS → WCS
   (vla-put-insertionpoint obj (vlax-3d-point (BSW:vec+ ins3 (BSW:vec* mm ldir))))
   (vla-update obj))
 
