@@ -3,6 +3,10 @@
   (if (null ss)
     (setq ss (ssget)))
   (if ss
-    (command "._MOVE" ss "" "0,0,0" "100,0,0"))
+    (progn
+      (command "._MOVE" ss "" "0,0,0" "100,0,0")
+      (sssetfirst nil ss)
+    )
+  )
   (princ)
 )
