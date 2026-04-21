@@ -208,12 +208,24 @@
   (vla-put-insertionpoint obj (vlax-3d-point (BSW:vec+ ins3 (BSW:vec* mm ldir))))
   (vla-update obj))
 
-;;; 화면 위/아래 방향으로 mm 이동 (뷰 기준 Y축)
-(defun BSW:move-updown (ent mm / obj view-y ins3)
-  (setq obj    (vlax-ename->vla-object ent)
-        view-y (trans '(0.0 1.0 0.0) 2 0 T)   ; DCS Y → WCS (화면 위 방향)
-        ins3   (trans (cdr (assoc 10 (entget ent))) ent 0))
-  (vla-put-insertionpoint obj (vlax-3d-point (BSW:vec+ ins3 (BSW:vec* mm view-y))))
+;;; 블럭 길이방향에 수직인 방향 (뷰 평면 안에서) 반환
+;;; = cross(view_z, length_dir) → 길이방향을 뷰 평면에서 90도 회전
+;;; view_y 와 같은 방향으로 정렬해서 반환
+(defun BSW:get-perp-dir (ent / ldir view-z perp view-y)
+  (setq ldir   (BSW:get-length-dir ent)
+        view-z (trans '(0.0 0.0 1.0) 2 0 T)   ; DCS Z(화면 밖) → WCS
+        perp   (BSW:normalize (BSW:cross view-z ldir))
+        view-y (trans '(0.0 1.0 0.0) 2 0 T))  ; 화면 위 방향
+  (if (< (BSW:dot perp view-y) 0)
+    (BSW:vec* -1.0 perp)
+    perp))
+
+;;; 블럭 길이방향 수직으로 mm 이동
+(defun BSW:move-updown (ent mm / obj perp ins3)
+  (setq obj  (vlax-ename->vla-object ent)
+        perp (BSW:get-perp-dir ent)
+        ins3 (trans (cdr (assoc 10 (entget ent))) ent 0))
+  (vla-put-insertionpoint obj (vlax-3d-point (BSW:vec+ ins3 (BSW:vec* mm perp))))
   (vla-update obj))
 
 ;;; 블럭 회전 (도 단위 / 양수=반시계 / 음수=시계)
