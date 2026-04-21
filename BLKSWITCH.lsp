@@ -281,8 +281,13 @@
 ;; ============================================================
 ;; 메인 명령 : BS
 ;; ============================================================
-(defun C:BS ( / sel-ent cur-obb grtype grval done result)
-  (setq sel-ent nil cur-obb nil done nil)
+(defun C:BS ( / sel-ent cur-obb grtype grval done result
+               last-vctr last-vsize chk-vctr chk-vsize)
+  (setq sel-ent  nil
+        cur-obb  nil
+        done     nil
+        last-vctr  (getvar "VIEWCTR")
+        last-vsize (getvar "VIEWSIZE"))
 
   (princ "\n[BS]  클릭:선택  A:왼늘  S:왼줄  D:오줄  F:오늘")
   (princ "\n      Z:←500  X:←100  C:→100  V:→500  W:↑100  E:↓100  Q:CCW10  R:CW10  Space/ESC:종료")
@@ -293,7 +298,19 @@
     (setq grtype (car (setq _gr (grread T 4 0))) grval (cadr _gr))
     (cond
 
-      ((= grtype 5) nil) ; 마우스 이동 무시
+      ;; 마우스 이동: 뷰 변경 감지 → 하이라이트 재생성
+      ((= grtype 5)
+       (if sel-ent
+         (progn
+           (setq chk-vctr  (getvar "VIEWCTR")
+                 chk-vsize (getvar "VIEWSIZE"))
+           (if (not (and (equal chk-vctr  last-vctr  1e-4)
+                         (equal chk-vsize last-vsize 1e-4)))
+             (progn
+               (setq cur-obb (BSW:get-obb sel-ent))
+               (BSW:draw-obb cur-obb *BSW:color*)
+               (setq last-vctr  chk-vctr
+                     last-vsize chk-vsize))))))
 
       ;; 마우스 클릭
       ((= grtype 3)
