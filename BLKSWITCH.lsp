@@ -15,7 +15,7 @@
 (setq *BSW:list* '("1M" "1.5M" "2M" "2.5M" "3M"))
 
 ;; ============================================================
-;; ssget 필터 동적 생성 (블럭 목록에 있는 이름만 선택)
+;; ssget 필터 동적 생성
 ;; ============================================================
 (defun BSW:build-filter (name-list / f)
   (setq f (list '(-4 . "<AND") '(0 . "INSERT") '(-4 . "<OR")))
@@ -57,20 +57,20 @@
     (BSW:vec+ (BSW:vec* (- (sin rot)) ax) (BSW:vec* (cos rot) ay))
     normal))
 
-;;; 블럭 길이방향 (뷰 오른쪽 기준으로 정렬)
 (defun BSW:get-length-dir (ent / lx view-x)
   (setq lx     (car (BSW:local-axes ent))
         view-x (trans '(1.0 0.0 0.0) 2 0 T))
   (if (< (BSW:dot lx view-x) 0) (BSW:vec* -1.0 lx) lx))
 
-;;; 블럭 폭방향 (로컬 Y축, 뷰 위쪽 기준으로 정렬)
 (defun BSW:get-width-dir (ent / ly view-y)
   (setq ly     (nth 1 (BSW:local-axes ent))
         view-y (trans '(0.0 1.0 0.0) 2 0 T))
   (if (< (BSW:dot ly view-y) 0) (BSW:vec* -1.0 ly) ly))
 
 ;; ============================================================
-;; OBB - 앵커 계산용
+;; OBB (앵커 계산용)
+;; vla-getboundingbox 는 entmod 결과를 직접 읽으므로
+;; entupd 없이도 최신 데이터 반영됨
 ;; ============================================================
 (defun BSW:get-obb (ent / ed ed-tmp obj normal rot ax ay lx ly lz
                          mn-sa mx-sa mn mx corners cx cy cz ins3)
@@ -92,15 +92,15 @@
     (setq mn (vlax-safearray->list mn-sa) mx (vlax-safearray->list mx-sa))
     (setq mn '(-0.5 -0.5 -0.5) mx '(0.5 0.5 0.5)))
   (entmod ed)
-  (setq ins3 (trans (cdr (assoc 10 ed)) ent 0))
-  (setq normal (BSW:normalize normal))
+  (setq ins3   (trans (cdr (assoc 10 ed)) ent 0)
+        normal (BSW:normalize normal))
   (if (and (< (abs (car normal)) 0.015625) (< (abs (cadr normal)) 0.015625))
     (setq ax (BSW:normalize (BSW:cross '(0.0 1.0 0.0) normal)))
     (setq ax (BSW:normalize (BSW:cross '(0.0 0.0 1.0) normal))))
-  (setq ay (BSW:normalize (BSW:cross normal ax))
-        lx (BSW:vec+ (BSW:vec* (cos rot) ax) (BSW:vec* (sin rot) ay))
-        ly (BSW:vec+ (BSW:vec* (- (sin rot)) ax) (BSW:vec* (cos rot) ay))
-        lz normal
+  (setq ay      (BSW:normalize (BSW:cross normal ax))
+        lx      (BSW:vec+ (BSW:vec* (cos rot) ax) (BSW:vec* (sin rot) ay))
+        ly      (BSW:vec+ (BSW:vec* (- (sin rot)) ax) (BSW:vec* (cos rot) ay))
+        lz      normal
         corners nil)
   (foreach cx (list (car mn) (car mx))
     (foreach cy (list (cadr mn) (cadr mx))
@@ -126,79 +126,89 @@
   (if lst i -1))
 
 ;; ============================================================
-;; 블럭 조작 (미리 계산된 방향벡터 사용)
+;; 블럭 조작 - entmod 만 사용, entupd 는 do-all 에서 일괄 처리
 ;; ============================================================
 
-;;; 블럭 교체 + 끝점 고정 (ldir 을 인수로 받음)
+;;; 블럭 교체 + 끝점 고정
+;;; entmod 만 사용 → 화면 업데이트 없음 (do-switch-all 에서 일괄)
 (defun BSW:switch-anchored (ent new-name anchor ldir
-                            / obj old-obb new-obb old-proj new-proj delta ins3)
-  (setq obj     (vlax-ename->vla-object ent)
+                            / ed old-obb new-obb old-proj new-proj
+                              delta ins3-wcs new-ins-ocs)
+  (setq ed      (entget ent)
         old-obb (BSW:get-obb ent))
-  (vla-put-name obj new-name)
-  (vla-update obj)
+  ;; 블럭명 변경 (vla-getboundingbox 는 entmod 후 직접 읽음)
+  (entmod (subst (cons 2 new-name) (assoc 2 ed) ed))
+  ;; 새 OBB → 앵커 보정
   (setq new-obb (BSW:get-obb ent))
   (if (= anchor 'R)
     (setq old-proj (BSW:proj-max old-obb ldir) new-proj (BSW:proj-max new-obb ldir))
     (setq old-proj (BSW:proj-min old-obb ldir) new-proj (BSW:proj-min new-obb ldir)))
-  (setq delta (- old-proj new-proj)
-        ins3  (trans (cdr (assoc 10 (entget ent))) ent 0))
-  (vla-put-insertionpoint obj (vlax-3d-point (BSW:vec+ ins3 (BSW:vec* delta ldir))))
-  (vla-update obj))
+  (setq delta       (- old-proj new-proj)
+        ins3-wcs    (trans (cdr (assoc 10 (entget ent))) ent 0)
+        new-ins-ocs (trans (BSW:vec+ ins3-wcs (BSW:vec* delta ldir)) 0 ent))
+  ;; 삽입점 변경
+  (entmod (subst (append '(10) new-ins-ocs) (assoc 10 (entget ent)) (entget ent))))
 
 ;;; 길이방향 이동
-(defun BSW:move-block (ent ldir mm / obj ins3)
-  (setq obj  (vlax-ename->vla-object ent)
-        ins3 (trans (cdr (assoc 10 (entget ent))) ent 0))
-  (vla-put-insertionpoint obj (vlax-3d-point (BSW:vec+ ins3 (BSW:vec* mm ldir))))
-  (vla-update obj))
+(defun BSW:move-block (ent ldir mm / ed ins3-wcs new-ins-ocs)
+  (setq ed          (entget ent)
+        ins3-wcs    (trans (cdr (assoc 10 ed)) ent 0)
+        new-ins-ocs (trans (BSW:vec+ ins3-wcs (BSW:vec* mm ldir)) 0 ent))
+  (entmod (subst (append '(10) new-ins-ocs) (assoc 10 ed) ed)))
 
 ;;; 폭방향 이동
-(defun BSW:move-updown (ent wdir mm / obj ins3)
-  (setq obj  (vlax-ename->vla-object ent)
-        ins3 (trans (cdr (assoc 10 (entget ent))) ent 0))
-  (vla-put-insertionpoint obj (vlax-3d-point (BSW:vec+ ins3 (BSW:vec* mm wdir))))
-  (vla-update obj))
+(defun BSW:move-updown (ent wdir mm / ed ins3-wcs new-ins-ocs)
+  (setq ed          (entget ent)
+        ins3-wcs    (trans (cdr (assoc 10 ed)) ent 0)
+        new-ins-ocs (trans (BSW:vec+ ins3-wcs (BSW:vec* mm wdir)) 0 ent))
+  (entmod (subst (append '(10) new-ins-ocs) (assoc 10 ed) ed)))
 
 ;;; 회전
-(defun BSW:rotate-block (ent deg / obj cur-rot)
-  (setq obj     (vlax-ename->vla-object ent)
-        cur-rot (if (assoc 50 (entget ent)) (cdr (assoc 50 (entget ent))) 0.0))
-  (vla-put-rotation obj (+ cur-rot (* deg (/ pi 180.0))))
-  (vla-update obj))
+(defun BSW:rotate-block (ent deg / ed cur-rot new-rot)
+  (setq ed      (entget ent)
+        cur-rot (if (assoc 50 ed) (cdr (assoc 50 ed)) 0.0)
+        new-rot (+ cur-rot (* deg (/ pi 180.0))))
+  (entmod (if (assoc 50 ed)
+            (subst (cons 50 new-rot) (assoc 50 ed) ed)
+            (append ed (list (cons 50 new-rot))))))
 
 ;; ============================================================
-;; 선택된 전체 블럭에 적용 (block-data = ((ent ldir wdir) ...) )
+;; 전체 블럭 일괄 처리 + entupd 일괄 → 화면은 호출부에서 한번에
+;; block-data 구조: ((ent ldir wdir) ...)
 ;; ============================================================
 
 (defun BSW:do-switch-all (block-data dir anchor arrow / ent ldir cur-idx new-idx new-name cnt)
   (setq cnt 0)
   (foreach bd block-data
-    (setq ent  (car bd)
-          ldir (cadr bd)
+    (setq ent (car bd) ldir (cadr bd)
           cur-idx (BSW:index-of (cdr (assoc 2 (entget ent))) *BSW:list*))
     (cond
       ((= cur-idx -1) nil)
       ((and (= dir  1) (>= cur-idx (1- (length *BSW:list*)))) nil)
       ((and (= dir -1) (<= cur-idx 0)) nil)
-      (T
-       (setq new-idx  (+ cur-idx dir)
-             new-name (nth new-idx *BSW:list*))
-       (BSW:switch-anchored ent new-name anchor ldir)
-       (setq cnt (1+ cnt)))))
+      (T (setq new-idx  (+ cur-idx dir)
+               new-name (nth new-idx *BSW:list*))
+         (BSW:switch-anchored ent new-name anchor ldir)
+         (setq cnt (1+ cnt)))))
+  ;; 전체 entupd 일괄
+  (foreach bd block-data (entupd (car bd)))
   (if (> cnt 0)
     (princ (strcat "\n  " arrow "  " (itoa cnt) "개"))
     (princ (strcat "\n  " arrow "  변경 없음"))))
 
 (defun BSW:do-move-all (block-data mm label)
   (foreach bd block-data (BSW:move-block (car bd) (cadr bd) mm))
+  (foreach bd block-data (entupd (car bd)))
   (princ (strcat "\n  " label "  " (itoa (length block-data)) "개")))
 
 (defun BSW:do-updown-all (block-data mm label)
   (foreach bd block-data (BSW:move-updown (car bd) (caddr bd) mm))
+  (foreach bd block-data (entupd (car bd)))
   (princ (strcat "\n  " label "  " (itoa (length block-data)) "개")))
 
 (defun BSW:do-rotate-all (block-data deg label)
   (foreach bd block-data (BSW:rotate-block (car bd) deg))
+  (foreach bd block-data (entupd (car bd)))
   (princ (strcat "\n  " label "  " (itoa (length block-data)) "개")))
 
 ;; ============================================================
@@ -208,14 +218,13 @@
 
   (setq flt (BSW:build-filter *BSW:list*))
 
-  ;; 사전 선택(Pickfirst) 확인 → 없으면 직접 선택 요청
+  ;; 사전 선택(Pickfirst) 또는 직접 선택 - 목록 블럭만 허용
   (setq ss (ssget "_I" flt))
   (if (not ss)
     (progn
       (princ "\n블럭을 선택하세요 (Enter 로 완료): ")
       (setq ss (ssget flt))))
 
-  ;; 선택 목록 구성 (ssget 필터로 이미 걸러짐)
   (setq sel-list nil)
   (if ss
     (progn
@@ -227,7 +236,7 @@
   (if (not sel-list)
     (princ "\n  목록에 해당하는 블럭이 없습니다.")
     (progn
-      ;; ★ 방향 벡터를 한 번만 계산 ★
+      ;; ★ 방향 벡터 한 번만 계산 ★
       (setq block-data
         (mapcar (function (lambda (ent)
                   (list ent
@@ -240,8 +249,8 @@
       (princ "\n  Z:←500  X:←100  C:→100  V:→500")
       (princ "\n  W:폭↑100  E:폭↓100  Q:CCW10  R:CW10  Space/ESC:종료")
 
-      ;; 선택 표시 유지
-      (foreach ent sel-list (redraw ent 3))
+      ;; sssetfirst 로 선택 표시 유지
+      (sssetfirst nil ss)
 
       (setq done nil)
       (while (not done)
@@ -251,33 +260,43 @@
           ((= grtype 5) nil)
           ((= grtype 2)
            (cond
-             ;; A : 왼쪽 늘리기
-             ((member grval '(65 97))  (BSW:do-switch-all block-data  1 'R "<- 늘리기"))
-             ;; S : 왼쪽 줄이기
-             ((member grval '(83 115)) (BSW:do-switch-all block-data -1 'R "-> 줄이기"))
-             ;; D : 오른쪽 줄이기
-             ((member grval '(68 100)) (BSW:do-switch-all block-data -1 'L "<- 줄이기"))
-             ;; F : 오른쪽 늘리기
-             ((member grval '(70 102)) (BSW:do-switch-all block-data  1 'L "-> 늘리기"))
-             ;; Z : ←500mm
-             ((member grval '(90 122)) (BSW:do-move-all block-data -500 "<- 500mm"))
-             ;; X : ←100mm
-             ((member grval '(88 120)) (BSW:do-move-all block-data -100 "<- 100mm"))
-             ;; C : →100mm
-             ((member grval '(67 99))  (BSW:do-move-all block-data  100 "-> 100mm"))
-             ;; V : →500mm
-             ((member grval '(86 118)) (BSW:do-move-all block-data  500 "-> 500mm"))
-             ;; W : 폭방향 +100mm
-             ((member grval '(87 119)) (BSW:do-updown-all block-data  100 "폭↑ 100mm"))
-             ;; E : 폭방향 -100mm
-             ((member grval '(69 101)) (BSW:do-updown-all block-data -100 "폭↓ 100mm"))
-             ;; Q : 반시계 10도
-             ((member grval '(81 113)) (BSW:do-rotate-all block-data  10 "CCW 10deg"))
-             ;; R : 시계 10도
-             ((member grval '(82 114)) (BSW:do-rotate-all block-data -10 "CW 10deg"))
-             ;; ESC / Space / Enter
+             ((member grval '(65 97))
+              (BSW:do-switch-all block-data  1 'R "<- 늘리기")
+              (redraw) (sssetfirst nil ss))
+             ((member grval '(83 115))
+              (BSW:do-switch-all block-data -1 'R "-> 줄이기")
+              (redraw) (sssetfirst nil ss))
+             ((member grval '(68 100))
+              (BSW:do-switch-all block-data -1 'L "<- 줄이기")
+              (redraw) (sssetfirst nil ss))
+             ((member grval '(70 102))
+              (BSW:do-switch-all block-data  1 'L "-> 늘리기")
+              (redraw) (sssetfirst nil ss))
+             ((member grval '(90 122))
+              (BSW:do-move-all block-data -500 "<- 500mm")
+              (redraw) (sssetfirst nil ss))
+             ((member grval '(88 120))
+              (BSW:do-move-all block-data -100 "<- 100mm")
+              (redraw) (sssetfirst nil ss))
+             ((member grval '(67 99))
+              (BSW:do-move-all block-data  100 "-> 100mm")
+              (redraw) (sssetfirst nil ss))
+             ((member grval '(86 118))
+              (BSW:do-move-all block-data  500 "-> 500mm")
+              (redraw) (sssetfirst nil ss))
+             ((member grval '(87 119))
+              (BSW:do-updown-all block-data  100 "폭↑ 100mm")
+              (redraw) (sssetfirst nil ss))
+             ((member grval '(69 101))
+              (BSW:do-updown-all block-data -100 "폭↓ 100mm")
+              (redraw) (sssetfirst nil ss))
+             ((member grval '(81 113))
+              (BSW:do-rotate-all block-data  10 "CCW 10deg")
+              (redraw) (sssetfirst nil ss))
+             ((member grval '(82 114))
+              (BSW:do-rotate-all block-data -10 "CW 10deg")
+              (redraw) (sssetfirst nil ss))
              ((member grval '(27 32 13))
-              (foreach ent sel-list (redraw ent 4))
               (setq done T)
               (princ "\n  종료.\n"))))))))
   (princ))
