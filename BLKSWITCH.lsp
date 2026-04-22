@@ -224,6 +224,9 @@
       (princ "\n  Z:←500  X:←100  C:→100  V:→500")
       (princ "\n  W:폭↑100  E:폭↓100  Q:CCW10  R:CW10  Space/ESC:종료")
 
+      ;; 선택 표시 유지
+      (foreach ent sel-list (redraw ent 3))
+
       (setq done nil)
       (while (not done)
         (setq grtype (car (setq _gr (grread nil 4 0)))
@@ -258,6 +261,7 @@
              ((member grval '(82 114)) (BSW:do-rotate-all sel-list -10 "CW 10deg"))
              ;; ESC / Space / Enter
              ((member grval '(27 32 13))
+              (foreach ent sel-list (redraw ent 4))
               (setq done T)
               (princ "\n  종료.\n"))))))))
   (princ))
