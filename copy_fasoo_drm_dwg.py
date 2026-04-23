@@ -1,0 +1,168 @@
+"""
+DWG 파일 중 Fasoo DRM이 걸린 파일만 별도 폴더로 복사하는 스크립트.
+
+탐지 방식:
+  1. 정상 DWG 파일은 헤더가 'AC10'으로 시작 (AC1009 ~ AC1032 등)
+  2. Fasoo DRM 보호 파일은 'AC10' 헤더 대신 Fasoo 고유 시그니처를 포함
+  3. 헤더에서 b'FASOO' / b'FED\x00' / b'\x00FAS' 등을 추가 확인
+"""
+
+import os
+import shutil
+import argparse
+from pathlib import Path
+
+# 정상 DWG 매직 바이트 (AutoCAD 버전별)
+DWG_MAGIC = b"AC10"
+
+# Fasoo DRM 시그니처 후보 (헤더 512바이트 내에서 탐색)
+FASOO_SIGNATURES = [
+    b"FASOO",
+    b"FED\x00",
+    b"fasoo",
+    b"\x46\x41\x53\x4f\x4f",  # FASOO hex
+]
+
+
+def is_fasoo_drm(filepath: Path) -> bool:
+    """파일 헤더를 읽어 Fasoo DRM 여부 반환."""
+    try:
+        with open(filepath, "rb") as f:
+            header = f.read(512)
+    except (OSError, PermissionError):
+        return False
+
+    # 정상 DWG 헤더면 DRM 아님
+    if header[:4] == DWG_MAGIC:
+        return False
+
+    # Fasoo 시그니처 탐색
+    for sig in FASOO_SIGNATURES:
+        if sig in header:
+            return True
+
+    # 헤더가 AC10으로 시작하지 않고 시그니처도 없지만
+    # 파일 확장자가 .dwg인 경우 → 의심 파일로 포함할지 옵션으로 처리
+    return False
+
+
+def copy_fasoo_dwg_files(
+    source_dir: str,
+    dest_dir: str,
+    recursive: bool = False,
+    include_suspicious: bool = False,
+    dry_run: bool = False,
+) -> None:
+    """
+    source_dir 내 DWG 파일 중 Fasoo DRM 파일을 dest_dir로 복사.
+
+    Args:
+        source_dir: 검색할 원본 폴더 경로
+        dest_dir: DRM 파일을 복사할 대상 폴더 경로
+        recursive: 하위 폴더까지 재귀 탐색 여부
+        include_suspicious: AC10 헤더 없고 시그니처도 없는 의심 파일 포함 여부
+        dry_run: True면 실제 복사 없이 대상 파일 목록만 출력
+    """
+    source_path = Path(source_dir).resolve()
+    dest_path = Path(dest_dir).resolve()
+
+    if not source_path.exists():
+        print(f"[오류] 원본 폴더가 존재하지 않습니다: {source_path}")
+        return
+
+    if not dry_run:
+        dest_path.mkdir(parents=True, exist_ok=True)
+
+    pattern = "**/*.dwg" if recursive else "*.dwg"
+    dwg_files = list(source_path.glob(pattern))
+
+    if not dwg_files:
+        print("DWG 파일이 없습니다.")
+        return
+
+    print(f"검색 폴더  : {source_path}")
+    print(f"복사 대상  : {dest_path}")
+    print(f"총 DWG 수  : {len(dwg_files)}")
+    print(f"재귀 탐색  : {'예' if recursive else '아니오'}")
+    print(f"Dry-run   : {'예' if dry_run else '아니오'}")
+    print("-" * 60)
+
+    copied = 0
+    skipped = 0
+
+    for dwg in sorted(dwg_files):
+        try:
+            with open(dwg, "rb") as f:
+                header = f.read(512)
+        except (OSError, PermissionError) as e:
+            print(f"  [건너뜀] 읽기 실패 — {dwg.name}: {e}")
+            skipped += 1
+            continue
+
+        is_drm = False
+        reason = ""
+
+        if header[:4] != DWG_MAGIC:
+            for sig in FASOO_SIGNATURES:
+                if sig in header:
+                    is_drm = True
+                    reason = f"시그니처 감지: {sig!r}"
+                    break
+
+            if not is_drm and include_suspicious:
+                is_drm = True
+                reason = "AC10 헤더 없음 (의심 파일)"
+
+        if is_drm:
+            dest_file = dest_path / dwg.name
+            # 파일명 충돌 처리
+            if dest_file.exists():
+                stem = dwg.stem
+                suffix = dwg.suffix
+                counter = 1
+                while dest_file.exists():
+                    dest_file = dest_path / f"{stem}_{counter}{suffix}"
+                    counter += 1
+
+            if dry_run:
+                print(f"  [DRY] {dwg.relative_to(source_path)}  →  {dest_file.name}  ({reason})")
+            else:
+                shutil.copy2(dwg, dest_file)
+                print(f"  [복사] {dwg.relative_to(source_path)}  →  {dest_file.name}  ({reason})")
+            copied += 1
+        else:
+            skipped += 1
+
+    print("-" * 60)
+    print(f"완료: DRM 파일 {copied}개 복사, 일반 파일 {skipped}개 건너뜀")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="DWG 파일 중 Fasoo DRM이 걸린 파일을 별도 폴더로 복사"
+    )
+    parser.add_argument("source", help="검색할 원본 폴더 경로")
+    parser.add_argument("dest", help="DRM 파일을 복사할 대상 폴더 경로")
+    parser.add_argument("-r", "--recursive", action="store_true", help="하위 폴더 재귀 탐색")
+    parser.add_argument(
+        "-s",
+        "--suspicious",
+        action="store_true",
+        help="AC10 헤더 없고 시그니처도 없는 의심 파일도 포함",
+    )
+    parser.add_argument(
+        "-n", "--dry-run", action="store_true", help="실제 복사 없이 대상 파일 목록만 출력"
+    )
+    args = parser.parse_args()
+
+    copy_fasoo_dwg_files(
+        source_dir=args.source,
+        dest_dir=args.dest,
+        recursive=args.recursive,
+        include_suspicious=args.suspicious,
+        dry_run=args.dry_run,
+    )
+
+
+if __name__ == "__main__":
+    main()
