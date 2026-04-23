@@ -1,9 +1,11 @@
 """
 Navisworks FiletoolsTaskRunner - DWG/SAT/DGN → NWD 일괄 변환
-라이선스가 없으면 대기 후 자동 재시도
+- 라이선스가 없으면 대기 후 자동 재시도
+- 경로가 길면 짧은 임시 경로로 복사 후 변환
 """
 
 import subprocess
+import shutil
 import time
 import sys
 from pathlib import Path
@@ -22,55 +24,88 @@ TARGET_EXTENSIONS = {".dwg", ".sat", ".dgn"}
 RECURSIVE = True
 
 RETRY_INTERVAL_SEC = 60   # 라이선스 없을 때 재시도 대기 시간 (초)
-MAX_RETRIES        = 60   # 최대 재시도 횟수 (60 * 60초 = 최대 1시간 대기)
+MAX_RETRIES        = 60   # 최대 재시도 횟수 (60회 × 60초 = 최대 1시간 대기)
+
+# Windows MAX_PATH 제한 (260자) 초과 시 임시 폴더 사용
+TEMP_DIR = r"C:\nw_tmp"
+PATH_LIMIT = 240  # 여유 있게 240자 기준
 
 # ──────────────────────────────────────────────
 
-LICENSE_ERROR_CODE = -2146959355  # COM 라이선스 오류 코드
+LICENSE_ERROR_CODE = -2146959355
 
 
 def log(msg: str):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
 
+def needs_temp(path: Path) -> bool:
+    return len(str(path)) > PATH_LIMIT
+
+
 def run_conversion(input_file: Path, output_file: Path) -> str:
     """
-    변환 실행. 반환값:
+    반환값:
       'success'  - 성공
       'license'  - 라이선스 부족 (재시도 필요)
       'fail'     - 기타 실패
     """
-    cmd = (
-        f'"{FILETOOLS_RUNNER}" '
-        f'/i "{input_file}" '
-        f'/of "{output_file}" '
-        f'/over'
-    )
+    use_temp = needs_temp(input_file) or needs_temp(output_file)
+    tmp_dir  = None
 
-    result = subprocess.run(
-        cmd, shell=True, capture_output=True,
-        text=True, encoding="utf-8", errors="replace",
-    )
+    try:
+        if use_temp:
+            tmp_dir    = Path(TEMP_DIR)
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            tmp_input  = tmp_dir / input_file.name
+            tmp_output = tmp_dir / (input_file.stem + ".nwd")
+            shutil.copy2(input_file, tmp_input)
+            log(f"  [경로 길이 초과] 임시 폴더 사용: {tmp_dir}")
+            actual_in  = tmp_input
+            actual_out = tmp_output
+        else:
+            actual_in  = input_file
+            actual_out = output_file
 
-    stdout = result.stdout.strip()
-    stderr = result.stderr.strip()
+        cmd = (
+            f'"{FILETOOLS_RUNNER}" '
+            f'/i "{actual_in}" '
+            f'/of "{actual_out}" '
+            f'/over'
+        )
 
-    # 항상 출력 (디버깅용)
-    print(f"  returncode : {result.returncode}")
-    if stdout:
-        print(f"  STDOUT     : {stdout}")
-    if stderr:
-        print(f"  STDERR     : {stderr}")
+        result = subprocess.run(
+            cmd, shell=True, capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
 
-    # 라이선스 오류 감지
-    if str(LICENSE_ERROR_CODE) in stdout or "Failed to startup Navisworks" in stdout:
-        return "license"
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
 
-    # 파일 생성 여부로 최종 판정
-    if output_file.exists():
-        return "success"
+        print(f"  returncode : {result.returncode}")
+        if stdout:
+            print(f"  STDOUT     : {stdout}")
+        if stderr:
+            print(f"  STDERR     : {stderr}")
 
-    return "fail"
+        # 라이선스 오류 감지
+        if str(LICENSE_ERROR_CODE) in stdout or "Failed to startup Navisworks" in stdout:
+            return "license"
+
+        # 파일 생성 여부 확인
+        if actual_out.exists():
+            if use_temp:
+                # 임시 → 최종 경로로 이동
+                output_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(actual_out), str(output_file))
+                tmp_input.unlink(missing_ok=True)
+            return "success"
+
+        return "fail"
+
+    except Exception as e:
+        print(f"  [예외] {e}")
+        return "fail"
 
 
 def convert_with_retry(input_file: Path, output_file: Path) -> bool:
@@ -131,12 +166,17 @@ def main():
     success = fail = 0
     for i, f in enumerate(files, 1):
         out = get_output_path(f)
-        log(f"[{i}/{len(files)}] {f.name}")
+        log(f"[{i}/{len(files)}] {f.name}  (경로 {len(str(f))}자)")
         if convert_with_retry(f, out):
             success += 1
         else:
             fail += 1
         print()
+
+    # 임시 폴더 정리
+    tmp = Path(TEMP_DIR)
+    if tmp.exists() and not any(tmp.iterdir()):
+        tmp.rmdir()
 
     print("=" * 60)
     print(f"  성공 {success}  /  실패 {fail}  /  전체 {len(files)}")
