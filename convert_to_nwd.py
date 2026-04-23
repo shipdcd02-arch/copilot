@@ -1,9 +1,13 @@
 """
-Navisworks FiletoolsTaskRunner를 이용한 DWG/SAT/DGN → NWD 일괄 변환 스크립트
+Navisworks FiletoolsTaskRunner - DWG/SAT/DGN → NWD 일괄 변환
+라이선스가 없으면 대기 후 자동 재시도
 """
 
 import subprocess
+import time
+import sys
 from pathlib import Path
+from datetime import datetime
 
 # ──────────────────────────────────────────────
 # 설정
@@ -12,47 +16,82 @@ from pathlib import Path
 FILETOOLS_RUNNER = r"C:\Program Files\Autodesk\Navisworks Simulate 2022\FiletoolsTaskRunner.exe"
 
 INPUT_FOLDER  = r"C:\입력폴더경로"
-OUTPUT_FOLDER = r"C:\출력폴더경로"  # None 이면 입력 파일과 같은 폴더
+OUTPUT_FOLDER = r"C:\출력폴더경로"   # None 이면 입력 파일과 같은 폴더
 
 TARGET_EXTENSIONS = {".dwg", ".sat", ".dgn"}
 RECURSIVE = True
 
+RETRY_INTERVAL_SEC = 60   # 라이선스 없을 때 재시도 대기 시간 (초)
+MAX_RETRIES        = 60   # 최대 재시도 횟수 (60 * 60초 = 최대 1시간 대기)
+
 # ──────────────────────────────────────────────
 
+LICENSE_ERROR_CODE = -2146959355  # COM 라이선스 오류 코드
 
-def convert_to_nwd(input_path: str, output_path: str) -> bool:
-    cmd = [
-        FILETOOLS_RUNNER,
-        "/i", input_path,
-        "/of", output_path,
-        "/over",
-    ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
+def log(msg: str):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
-    print(f"  CMD       : {' '.join(cmd)}")
-    print(f"  returncode: {result.returncode}")
-    if result.stdout.strip():
-        print(f"  STDOUT    : {result.stdout.strip()}")
-    if result.stderr.strip():
-        print(f"  STDERR    : {result.stderr.strip()}")
 
-    out = Path(output_path)
-    if out.exists():
-        print(f"  [성공] {out.name}  ({out.stat().st_size // 1024} KB)")
-        return True
-    else:
-        print(f"  [실패] 파일 미생성: {output_path}")
-        return False
+def run_conversion(input_file: Path, output_file: Path) -> str:
+    """
+    변환 실행. 반환값:
+      'success'  - 성공
+      'license'  - 라이선스 부족 (재시도 필요)
+      'fail'     - 기타 실패
+    """
+    cmd = (
+        f'"{FILETOOLS_RUNNER}" '
+        f'/i "{input_file}" '
+        f'/of "{output_file}" '
+        f'/over'
+    )
+
+    result = subprocess.run(
+        cmd, shell=True, capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+
+    stdout = result.stdout.strip()
+
+    # 라이선스 오류 감지
+    if str(LICENSE_ERROR_CODE) in stdout or "Failed to startup Navisworks" in stdout:
+        return "license"
+
+    # 파일 생성 여부로 최종 판정
+    if output_file.exists():
+        return "success"
+
+    return "fail"
+
+
+def convert_with_retry(input_file: Path, output_file: Path) -> bool:
+    for attempt in range(1, MAX_RETRIES + 1):
+        status = run_conversion(input_file, output_file)
+
+        if status == "success":
+            size_kb = output_file.stat().st_size // 1024
+            log(f"  [성공] {output_file.name}  ({size_kb} KB)")
+            return True
+
+        elif status == "license":
+            log(f"  라이선스 사용 중 - {RETRY_INTERVAL_SEC}초 후 재시도 ({attempt}/{MAX_RETRIES})")
+            time.sleep(RETRY_INTERVAL_SEC)
+
+        else:
+            log(f"  [실패] 변환 오류: {input_file.name}")
+            return False
+
+    log(f"  [실패] 최대 재시도 초과: {input_file.name}")
+    return False
 
 
 def collect_files(folder: Path) -> list[Path]:
     pattern = "**/*" if RECURSIVE else "*"
-    files = [
+    return sorted({
         f for f in folder.glob(pattern)
         if f.suffix.lower() in TARGET_EXTENSIONS
-    ]
-    return sorted(files)
+    })
 
 
 def get_output_path(input_file: Path) -> Path:
@@ -65,26 +104,27 @@ def get_output_path(input_file: Path) -> Path:
 
 def main():
     print("=" * 60)
-    print("  Navisworks 일괄 변환 (DWG / SAT / DGN → NWD)")
+    print("  Navisworks 일괄 변환  (DWG / SAT / DGN → NWD)")
+    print(f"  라이선스 대기: 최대 {MAX_RETRIES * RETRY_INTERVAL_SEC // 60}분")
     print("=" * 60)
 
     input_dir = Path(INPUT_FOLDER)
     if not input_dir.exists():
         print(f"[오류] 입력 폴더 없음: {INPUT_FOLDER}")
-        return
+        sys.exit(1)
 
     files = collect_files(input_dir)
     if not files:
         print(f"[정보] 변환할 파일이 없습니다: {INPUT_FOLDER}")
-        return
+        sys.exit(0)
 
-    print(f"[대상] {len(files)}개 파일\n")
+    log(f"대상 {len(files)}개 파일\n")
 
     success = fail = 0
     for i, f in enumerate(files, 1):
-        print(f"[{i}/{len(files)}] {f.name}")
         out = get_output_path(f)
-        if convert_to_nwd(str(f), str(out)):
+        log(f"[{i}/{len(files)}] {f.name}")
+        if convert_with_retry(f, out):
             success += 1
         else:
             fail += 1
