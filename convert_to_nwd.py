@@ -56,17 +56,27 @@ def run_conversion(input_file: Path, output_file: Path) -> str:
         actual_in  = tmp_input
         actual_out = tmp_output
 
-        cmd = (
-            f'"{FILETOOLS_RUNNER}" '
-            f'/i "{actual_in}" '
-            f'/of "{actual_out}" '
-            f'/over'
-        )
+        # 환경변수 TEMP/TMP 도 짧은 경로로 교체 (Navisworks 내부 임시파일 경로 문제 방지)
+        import os
+        env = os.environ.copy()
+        env["TEMP"] = str(tmp_dir)
+        env["TMP"]  = str(tmp_dir)
+
+        cmd = [
+            FILETOOLS_RUNNER,
+            "/i",   str(actual_in),
+            "/of",  str(actual_out),
+            "/over",
+        ]
+        print(f"  CMD : {' '.join(cmd)}")
 
         result = subprocess.run(
-            cmd, shell=True, capture_output=True,
+            cmd,
+            shell=False,                          # 직접 프로세스 실행 (cmd.exe 거치지 않음)
+            capture_output=True,
             text=True, encoding="utf-8", errors="replace",
-            cwd=str(tmp_dir),   # 작업 디렉토리를 짧은 ASCII 경로로 고정
+            cwd=str(tmp_dir),                     # 작업 디렉토리
+            env=env,                              # TEMP/TMP 교체된 환경변수
         )
 
         stdout = result.stdout.strip()
