@@ -53,6 +53,14 @@ def run_conversion(input_file: Path, output_file: Path) -> str:
     )
 
     stdout = result.stdout.strip()
+    stderr = result.stderr.strip()
+
+    # 항상 출력 (디버깅용)
+    print(f"  returncode : {result.returncode}")
+    if stdout:
+        print(f"  STDOUT     : {stdout}")
+    if stderr:
+        print(f"  STDERR     : {stderr}")
 
     # 라이선스 오류 감지
     if str(LICENSE_ERROR_CODE) in stdout or "Failed to startup Navisworks" in stdout:
