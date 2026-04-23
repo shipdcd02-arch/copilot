@@ -66,6 +66,7 @@ def run_conversion(input_file: Path, output_file: Path) -> str:
         result = subprocess.run(
             cmd, shell=True, capture_output=True,
             text=True, encoding="utf-8", errors="replace",
+            cwd=str(tmp_dir),   # 작업 디렉토리를 짧은 ASCII 경로로 고정
         )
 
         stdout = result.stdout.strip()
