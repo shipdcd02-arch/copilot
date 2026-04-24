@@ -1,0 +1,70 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net47</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>InterferenceCheck</AssemblyName>
+    <RootNamespace>InterferenceCheck</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>8.0</LangVersion>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+
+  <!--
+    ┌─────────────────────────────────────────────────────────────────┐
+    │  AutoCAD 설치 경로 자동 탐색 (버전 우선순위: 최신→구버전)         │
+    │  자동 탐색 실패 시: 아래 AcadDir 주석을 풀고 직접 경로 지정       │
+    │  또는 Directory.Build.props 에서 AcadDir 을 설정하세요.          │
+    └─────────────────────────────────────────────────────────────────┘
+  -->
+  <PropertyGroup>
+    <!-- 직접 지정 시 아래 줄의 주석 해제 -->
+    <!-- <AcadDir>C:\Program Files\Autodesk\AutoCAD 2018</AcadDir> -->
+
+    <!-- 자동 탐색: C 드라이브 (2018 최우선) -->
+    <AcadDir Condition="'$(AcadDir)'=='' AND Exists('C:\Program Files\Autodesk\AutoCAD 2018')">C:\Program Files\Autodesk\AutoCAD 2018</AcadDir>
+    <AcadDir Condition="'$(AcadDir)'=='' AND Exists('C:\Program Files\Autodesk\AutoCAD 2025')">C:\Program Files\Autodesk\AutoCAD 2025</AcadDir>
+    <AcadDir Condition="'$(AcadDir)'=='' AND Exists('C:\Program Files\Autodesk\AutoCAD 2024')">C:\Program Files\Autodesk\AutoCAD 2024</AcadDir>
+    <AcadDir Condition="'$(AcadDir)'=='' AND Exists('C:\Program Files\Autodesk\AutoCAD 2023')">C:\Program Files\Autodesk\AutoCAD 2023</AcadDir>
+    <AcadDir Condition="'$(AcadDir)'=='' AND Exists('C:\Program Files\Autodesk\AutoCAD 2022')">C:\Program Files\Autodesk\AutoCAD 2022</AcadDir>
+    <AcadDir Condition="'$(AcadDir)'=='' AND Exists('C:\Program Files\Autodesk\AutoCAD 2021')">C:\Program Files\Autodesk\AutoCAD 2021</AcadDir>
+    <AcadDir Condition="'$(AcadDir)'=='' AND Exists('C:\Program Files\Autodesk\AutoCAD 2020')">C:\Program Files\Autodesk\AutoCAD 2020</AcadDir>
+
+    <!-- 자동 탐색: D 드라이브 -->
+    <AcadDir Condition="'$(AcadDir)'=='' AND Exists('D:\Program Files\Autodesk\AutoCAD 2025')">D:\Program Files\Autodesk\AutoCAD 2025</AcadDir>
+    <AcadDir Condition="'$(AcadDir)'=='' AND Exists('D:\Program Files\Autodesk\AutoCAD 2024')">D:\Program Files\Autodesk\AutoCAD 2024</AcadDir>
+    <AcadDir Condition="'$(AcadDir)'=='' AND Exists('D:\Program Files\Autodesk\AutoCAD 2023')">D:\Program Files\Autodesk\AutoCAD 2023</AcadDir>
+    <AcadDir Condition="'$(AcadDir)'=='' AND Exists('D:\Program Files\Autodesk\AutoCAD 2022')">D:\Program Files\Autodesk\AutoCAD 2022</AcadDir>
+    <AcadDir Condition="'$(AcadDir)'=='' AND Exists('D:\Program Files\Autodesk\AutoCAD 2021')">D:\Program Files\Autodesk\AutoCAD 2021</AcadDir>
+
+    <!-- 자동 탐색: E 드라이브 -->
+    <AcadDir Condition="'$(AcadDir)'=='' AND Exists('E:\Program Files\Autodesk\AutoCAD 2025')">E:\Program Files\Autodesk\AutoCAD 2025</AcadDir>
+    <AcadDir Condition="'$(AcadDir)'=='' AND Exists('E:\Program Files\Autodesk\AutoCAD 2024')">E:\Program Files\Autodesk\AutoCAD 2024</AcadDir>
+    <AcadDir Condition="'$(AcadDir)'=='' AND Exists('E:\Program Files\Autodesk\AutoCAD 2023')">E:\Program Files\Autodesk\AutoCAD 2023</AcadDir>
+    <AcadDir Condition="'$(AcadDir)'=='' AND Exists('E:\Program Files\Autodesk\AutoCAD 2022')">E:\Program Files\Autodesk\AutoCAD 2022</AcadDir>
+
+    <!-- 탐색 실패 마커 -->
+    <AcadDir Condition="'$(AcadDir)'==''">__NOT_FOUND__</AcadDir>
+  </PropertyGroup>
+
+  <!-- 탐색 실패 시 명시적 오류 출력 -->
+  <Target Name="CheckAcadDir" BeforeTargets="BeforeBuild">
+    <Error Condition="'$(AcadDir)'=='__NOT_FOUND__'"
+           Text="AutoCAD 설치 경로를 찾을 수 없습니다.&#10;InterferenceCheck.csproj 상단의 AcadDir 주석을 풀고 AutoCAD 설치 폴더 경로를 직접 입력하세요.&#10;예: &lt;AcadDir&gt;E:\Program Files\Autodesk\AutoCAD 2024&lt;/AcadDir&gt;" />
+    <Message Text="[InterferenceCheck] AutoCAD 경로: $(AcadDir)" Importance="high" />
+  </Target>
+
+  <ItemGroup>
+    <Reference Include="AcCoreMgd">
+      <HintPath>$(AcadDir)\AcCoreMgd.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="AcDbMgd">
+      <HintPath>$(AcadDir)\AcDbMgd.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="AcMgd">
+      <HintPath>$(AcadDir)\AcMgd.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
