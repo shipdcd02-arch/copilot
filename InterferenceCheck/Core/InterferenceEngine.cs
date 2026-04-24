@@ -181,9 +181,11 @@ namespace InterferenceCheck.Core
                 copy1.BooleanOperation(BooleanOperationType.BoolIntersect, copy2);
                 consumed = true; // copy2는 이제 무효
 
-                if (copy1.IsNull) return 0;
+                // IsNull 사용 금지: 클론은 DB에 없으므로 ObjectId가 항상 null → IsNull 항상 true
+                double vol;
+                try   { vol = copy1.MassProperties.Volume; }
+                catch { return 0; } // 교차 결과가 degenerate(면만 접촉 등)
 
-                double vol = copy1.MassProperties.Volume;
                 if (vol > MinVolume)
                 {
                     try { resultExt = copy1.GeometricExtents; }
