@@ -1,8 +1,31 @@
-; 섹션 플레인 선택 후 사용 가능한 메서드 목록 출력
-(defun c:DumpSection ( / ent obj)
-  (vl-load-com)
-  (setq ent (car (entsel "\n섹션 플레인 선택: ")))
-  (setq obj (vlax-ename->vla-object ent))
-  (vlax-dump-object obj T)  ; T = 메서드 포함 출력
-  (princ)
-)
+mkdir SectionAutoBlock
+cd SectionAutoBlock
+dotnet new classlib --framework net47 -n SectionAutoBlock
+cd SectionAutoBlock
+
+
+
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net47</TargetFramework>
+    <Nullable>disable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="acdbmgd">
+      <HintPath>C:\Program Files\Autodesk\AutoCAD 2018\acdbmgd.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="acmgd">
+      <HintPath>C:\Program Files\Autodesk\AutoCAD 2018\acmgd.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="AcCoreMgd">
+      <HintPath>C:\Program Files\Autodesk\AutoCAD 2018\AcCoreMgd.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>
