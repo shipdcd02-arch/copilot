@@ -8,6 +8,7 @@ import subprocess
 import shutil
 import time
 import sys
+import os
 from pathlib import Path
 from datetime import datetime
 
@@ -32,10 +33,22 @@ TEMP_DIR = r"C:\nw_tmp"
 # ──────────────────────────────────────────────
 
 LICENSE_ERROR_CODE = -2146959355
+SUBST_DRIVE = "X:"   # 임시 드라이브 문자 (사용 중이면 다른 문자로 변경)
 
 
 def log(msg: str):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+
+
+def subst_create(drive: str, target: str):
+    """드라이브 문자를 폴더에 매핑"""
+    subst_remove(drive)  # 이미 있으면 제거 후 재생성
+    subprocess.run(f"subst {drive} {target}", shell=True, capture_output=True)
+
+
+def subst_remove(drive: str):
+    """드라이브 매핑 해제"""
+    subprocess.run(f"subst {drive} /d", shell=True, capture_output=True)
 
 
 
@@ -46,37 +59,36 @@ def run_conversion(input_file: Path, output_file: Path) -> str:
       'license'  - 라이선스 부족 (재시도 필요)
       'fail'     - 기타 실패
     """
-    tmp_dir    = Path(TEMP_DIR)
+    tmp_dir = Path(TEMP_DIR)
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_input  = tmp_dir / input_file.name
-    tmp_output = tmp_dir / (input_file.stem + ".nwd")
 
     try:
-        shutil.copy2(input_file, tmp_input)
-        actual_in  = tmp_input
-        actual_out = tmp_output
+        # subst로 드라이브 문자 매핑 → 경로를 X:\파일명 수준으로 최소화
+        subst_create(SUBST_DRIVE, str(tmp_dir))
+        virt_in  = Path(SUBST_DRIVE + "\\" + input_file.name)
+        virt_out = Path(SUBST_DRIVE + "\\" + input_file.stem + ".nwd")
 
-        # 환경변수 TEMP/TMP 도 짧은 경로로 교체 (Navisworks 내부 임시파일 경로 문제 방지)
-        import os
+        shutil.copy2(input_file, tmp_dir / input_file.name)
+
         env = os.environ.copy()
-        env["TEMP"] = str(tmp_dir)
-        env["TMP"]  = str(tmp_dir)
+        env["TEMP"] = SUBST_DRIVE + "\\"
+        env["TMP"]  = SUBST_DRIVE + "\\"
 
         cmd = [
             FILETOOLS_RUNNER,
-            "/i",   str(actual_in),
-            "/of",  str(actual_out),
+            "/i",   str(virt_in),
+            "/of",  str(virt_out),
             "/over",
         ]
         print(f"  CMD : {' '.join(cmd)}")
 
         result = subprocess.run(
             cmd,
-            shell=False,                          # 직접 프로세스 실행 (cmd.exe 거치지 않음)
+            shell=False,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
-            cwd=str(tmp_dir),                     # 작업 디렉토리
-            env=env,                              # TEMP/TMP 교체된 환경변수
+            cwd=SUBST_DRIVE + "\\",
+            env=env,
         )
 
         stdout = result.stdout.strip()
@@ -92,12 +104,12 @@ def run_conversion(input_file: Path, output_file: Path) -> str:
         if str(LICENSE_ERROR_CODE) in stdout or "Failed to startup Navisworks" in stdout:
             return "license"
 
-        # 파일 생성 여부 확인
-        if actual_out.exists():
-            # 임시 → 최종 경로로 이동
+        # 파일 생성 여부 확인 (실제 tmp 경로로 확인)
+        real_out = tmp_dir / (input_file.stem + ".nwd")
+        if real_out.exists():
             output_file.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(actual_out), str(output_file))
-            tmp_input.unlink(missing_ok=True)
+            shutil.move(str(real_out), str(output_file))
+            (tmp_dir / input_file.name).unlink(missing_ok=True)
             return "success"
 
         return "fail"
@@ -105,6 +117,8 @@ def run_conversion(input_file: Path, output_file: Path) -> str:
     except Exception as e:
         print(f"  [예외] {e}")
         return "fail"
+    finally:
+        subst_remove(SUBST_DRIVE)
 
 
 def convert_with_retry(input_file: Path, output_file: Path) -> bool:
