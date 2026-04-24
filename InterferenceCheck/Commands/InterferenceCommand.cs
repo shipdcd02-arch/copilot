@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Windows.Interop;
 using Autodesk.AutoCAD.Runtime;
+using AcRuntimeException = Autodesk.AutoCAD.Runtime.Exception;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
@@ -144,12 +145,12 @@ namespace InterferenceCheck.Commands
 
                     double vol;
                     try   { vol = c1.MassProperties.Volume; }
-                    catch (Exception ex) { L($"MassProperties 오류: {ex.Message}"); vol = -1; }
+                    catch (System.Exception ex) { L($"MassProperties 오류: {ex.Message}"); vol = -1; }
 
                     L($"Boolean 교차 체적: {vol:G6}");
                     L(vol > 0.001 ? ">>> 간섭 있음!" : ">>> 간섭 없음 (체적 부족)");
                 }
-                catch (Exception ex)
+                catch (System.Exception ex)
                 {
                     L($"BooleanOperation 예외: {ex.Message}");
                     L(">>> Boolean 연산 실패 (접촉만 하거나 기하 오류)");
