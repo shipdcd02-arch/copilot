@@ -17,7 +17,6 @@ namespace SectionAutoBlock
             var db = doc.Database;
             var ed = doc.Editor;
 
-            // 두 점으로 섹션 위치 지정
             var res1 = ed.GetPoint("\n섹션 시작점: ");
             if (res1.Status != PromptStatus.OK) return;
 
@@ -36,28 +35,24 @@ namespace SectionAutoBlock
                 var ms = (BlockTableRecord)tr.GetObject(
                     bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
 
-                // 섹션 플레인 생성
+                // 섹션 플레인 생성 및 DB에 먼저 추가
                 var section = new Section();
                 section.SetDatabaseDefaults();
+                var sectionId = ms.AppendEntity(section);
+                tr.AddNewlyCreatedDBObject(section, true);
 
-                // 꼭짓점 추가 (두 점으로 절단선 정의)
-                var pts = new Point3dCollection();
-                pts.Add(pt1);
-                pts.Add(pt2);
-                section.Vertices = pts;
+                // DB 추가 후 꼭짓점 설정
+                section.UpgradeOpen();
+                section.AddVertex(0, pt1);
+                section.AddVertex(1, pt2);
 
                 // 방향 설정
                 var lineDir = (pt2 - pt1).GetNormal();
                 section.ViewingDirection = lineDir.CrossProduct(Vector3d.ZAxis).GetNormal();
                 section.VerticalDirection = Vector3d.ZAxis;
 
-                // 위아래 높이 설정 (충분히 크게)
                 section.TopPlane    =  100000;
                 section.BottomPlane = -100000;
-
-                // 임시로 모델스페이스에 추가
-                var sectionId = ms.AppendEntity(section);
-                tr.AddNewlyCreatedDBObject(section, true);
 
                 // 모든 객체에 섹션 지오메트리 생성
                 var collected = new List<Entity>();
@@ -95,7 +90,6 @@ namespace SectionAutoBlock
                 }
 
                 // 임시 섹션 플레인 삭제
-                section.UpgradeOpen();
                 section.Erase();
 
                 if (collected.Count == 0)
