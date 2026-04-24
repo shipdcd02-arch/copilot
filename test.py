@@ -17,17 +17,14 @@ namespace SectionAutoBlock
             var db = doc.Database;
             var ed = doc.Editor;
 
-            var res1 = ed.GetPoint("\n섹션 시작점: ");
-            if (res1.Status != PromptStatus.OK) return;
+            var res = ed.GetPoint("\n섹션 위치 지정 (점 하나): ");
+            if (res.Status != PromptStatus.OK) return;
 
-            var opt2 = new PromptPointOptions("\n섹션 끝점: ");
-            opt2.UseBasePoint = true;
-            opt2.BasePoint = res1.Value;
-            var res2 = ed.GetPoint(opt2);
-            if (res2.Status != PromptStatus.OK) return;
+            var pt = res.Value;
 
-            var pt1 = res1.Value;
-            var pt2 = res2.Value;
+            // XZ 평면 섹션: Y좌표 고정, X축 방향으로 절단선
+            var pt1 = new Point3d(-1000000, pt.Y, 0);
+            var pt2 = new Point3d( 1000000, pt.Y, 0);
 
             using (var tr = db.TransactionManager.StartTransaction())
             {
@@ -46,22 +43,9 @@ namespace SectionAutoBlock
                 section.AddVertex(0, pt1);
                 section.AddVertex(1, pt2);
 
-                // 방향 설정
-                var lineDir = pt2 - pt1;
-                var lineDirXY = new Vector3d(lineDir.X, lineDir.Y, 0);
-
-                if (lineDirXY.Length < 1e-10)
-                {
-                    ed.WriteMessage("\n섹션 라인이 수직입니다. 수평으로 지정해주세요.");
-                    tr.Abort();
-                    return;
-                }
-
-                lineDirXY = lineDirXY.GetNormal();
-                var viewDir = new Vector3d(-lineDirXY.Y, lineDirXY.X, 0);
-
+                // XZ 평면: Y축 방향으로 바라봄
                 section.VerticalDirection = Vector3d.ZAxis;
-                section.ViewingDirection  = viewDir;
+                section.ViewingDirection  = Vector3d.YAxis;
                 section.TopPlane    =  100000;
                 section.BottomPlane = -100000;
 
