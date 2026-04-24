@@ -168,6 +168,7 @@ namespace InterferenceCheck.Dialogs
             var sel = ResultListView.SelectedItems.Cast<InterferenceResult>().ToList();
             if (sel.Count == 0) return;
 
+            // 선택 객체들의 합산 BBox
             Extents3d ext = sel[0].Group1Entity.BoundingBox;
             foreach (var r in sel)
             {
@@ -175,26 +176,44 @@ namespace InterferenceCheck.Dialogs
                 ext.AddExtents(r.Group2Entity.BoundingBox);
             }
 
+            // 대상 ObjectId 목록
+            var ids = sel
+                .SelectMany(r => new[] { r.Group1Entity.Id, r.Group2Entity.Id })
+                .Distinct().ToArray();
+
             var doc = AcadApp.DocumentManager.MdiActiveDocument;
             try
             {
                 using (doc.LockDocument())
                 {
-                    var view  = doc.Editor.GetCurrentView();
-                    double w  = Math.Max((ext.MaxPoint.X - ext.MinPoint.X) * 1.4, 0.001);
-                    double h  = Math.Max((ext.MaxPoint.Y - ext.MinPoint.Y) * 1.4, 0.001);
-                    double ar = view.Width / Math.Max(view.Height, 0.001);
-                    if (w / h < ar) w = h * ar; else h = w / ar;
-
-                    view.CenterPoint = new Point2d(
-                        (ext.MinPoint.X + ext.MaxPoint.X) / 2,
-                        (ext.MinPoint.Y + ext.MaxPoint.Y) / 2);
-                    view.Width  = w;
-                    view.Height = h;
-                    doc.Editor.SetCurrentView(view);
+                    // 객체 선택 후 ZOOM Object 실행
+                    doc.Editor.SetImpliedSelection(ids);
                 }
+                // 모달리스 상태에서 AutoCAD에 ZOOM 명령 전달
+                doc.SendStringToExecute("_.ZOOM\n_O\n\n", true, false, false);
             }
-            catch (Exception ex) { MessageBox.Show($"줌 오류: {ex.Message}"); }
+            catch
+            {
+                // fallback: 직접 뷰 조작
+                try
+                {
+                    using (doc.LockDocument())
+                    {
+                        var view = doc.Editor.GetCurrentView();
+                        double w = Math.Max((ext.MaxPoint.X - ext.MinPoint.X) * 1.5, 1.0);
+                        double h = Math.Max((ext.MaxPoint.Y - ext.MinPoint.Y) * 1.5, 1.0);
+                        double ar = view.Width / Math.Max(view.Height, 0.001);
+                        if (w / h < ar) w = h * ar; else h = w / ar;
+                        view.CenterPoint = new Point2d(
+                            (ext.MinPoint.X + ext.MaxPoint.X) / 2,
+                            (ext.MinPoint.Y + ext.MaxPoint.Y) / 2);
+                        view.Width  = w;
+                        view.Height = h;
+                        doc.Editor.SetCurrentView(view);
+                    }
+                }
+                catch (Exception ex2) { MessageBox.Show($"줌 오류: {ex2.Message}"); }
+            }
         }
 
         // ── 선택 하이라이트 ───────────────────────────────
