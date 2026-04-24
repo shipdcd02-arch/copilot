@@ -17,12 +17,23 @@ namespace SectionAutoBlock
             var db = doc.Database;
             var ed = doc.Editor;
 
-            var res = ed.GetPoint("\n섹션 위치 지정 (점 하나): ");
+            // 섹션 위치
+            var res = ed.GetPoint("\n섹션 위치 지정: ");
             if (res.Status != PromptStatus.OK) return;
-
             var pt = res.Value;
 
-            // XZ 평면 섹션: Y좌표 고정, X축 방향으로 절단선
+            // 두께 입력
+            var distOpt = new PromptDistanceOptions("\n두께 입력: ");
+            distOpt.AllowNegative = false;
+            distOpt.AllowZero = false;
+            var distRes = ed.GetDistance(distOpt);
+            if (distRes.Status != PromptStatus.OK) return;
+            double thickness = distRes.Value;
+
+            // Y 범위: 찍은 점 기준으로 ±두께/2
+            double yMin = pt.Y - thickness / 2.0;
+            double yMax = pt.Y + thickness / 2.0;
+
             var pt1 = new Point3d(-1000000, pt.Y, 0);
             var pt2 = new Point3d( 1000000, pt.Y, 0);
 
@@ -32,24 +43,20 @@ namespace SectionAutoBlock
                 var ms = (BlockTableRecord)tr.GetObject(
                     bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
 
-                // 섹션 플레인 생성 및 DB에 먼저 추가
+                // 섹션 플레인 생성
                 var section = new Section();
                 section.SetDatabaseDefaults();
                 var sectionId = ms.AppendEntity(section);
                 tr.AddNewlyCreatedDBObject(section, true);
 
-                // DB 추가 후 설정
                 section.UpgradeOpen();
                 section.AddVertex(0, pt1);
                 section.AddVertex(1, pt2);
-
-                // XZ 평면: Y축 방향으로 바라봄
                 section.VerticalDirection = Vector3d.ZAxis;
                 section.ViewingDirection  = Vector3d.YAxis;
-                section.TopPlane    =  100000;
-                section.BottomPlane = -100000;
+                section.TopPlane    = 100000;
+                section.BottomPlane = 100000;
 
-                // 모든 객체에 섹션 지오메트리 생성
                 var collected = new List<Entity>();
 
                 foreach (ObjectId id in ms)
@@ -57,6 +64,14 @@ namespace SectionAutoBlock
                     if (id == sectionId) continue;
                     var ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
                     if (ent == null) continue;
+
+                    // Y 범위 내 객체만 처리
+                    try
+                    {
+                        var ext = ent.GeometricExtents;
+                        if (ext.MaxPoint.Y < yMin || ext.MinPoint.Y > yMax) continue;
+                    }
+                    catch { continue; }
 
                     try
                     {
@@ -107,7 +122,6 @@ namespace SectionAutoBlock
                     tr.AddNewlyCreatedDBObject(e, true);
                 }
 
-                // 모델스페이스에 블록 참조 삽입
                 var msWrite = (BlockTableRecord)tr.GetObject(
                     bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
                 var blkRef = new BlockReference(Point3d.Origin, newBtrId);
