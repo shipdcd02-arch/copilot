@@ -358,7 +358,9 @@ namespace InterferenceCheck.Dialogs
                     if (!lt.Has(layerName))
                     {
                         lt.UpgradeOpen();
-                        var newLayer = new LayerTableRecord { Name = layerName, ColorIndex = 1 };
+                        var newLayer = new LayerTableRecord { Name = layerName };
+                        newLayer.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(
+                            Autodesk.AutoCAD.Colors.ColorMethod.ByAci, 1);
                         lt.Add(newLayer);
                         tr.AddNewlyCreatedDBObject(newLayer, true);
                     }
