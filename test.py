@@ -41,16 +41,27 @@ namespace SectionAutoBlock
                 var sectionId = ms.AppendEntity(section);
                 tr.AddNewlyCreatedDBObject(section, true);
 
-                // DB 추가 후 꼭짓점 설정
+                // DB 추가 후 설정
                 section.UpgradeOpen();
                 section.AddVertex(0, pt1);
                 section.AddVertex(1, pt2);
 
                 // 방향 설정
-                var lineDir = (pt2 - pt1).GetNormal();
-                section.ViewingDirection = lineDir.CrossProduct(Vector3d.ZAxis).GetNormal();
-                section.VerticalDirection = Vector3d.ZAxis;
+                var lineDir = pt2 - pt1;
+                var lineDirXY = new Vector3d(lineDir.X, lineDir.Y, 0);
 
+                if (lineDirXY.Length < 1e-10)
+                {
+                    ed.WriteMessage("\n섹션 라인이 수직입니다. 수평으로 지정해주세요.");
+                    tr.Abort();
+                    return;
+                }
+
+                lineDirXY = lineDirXY.GetNormal();
+                var viewDir = new Vector3d(-lineDirXY.Y, lineDirXY.X, 0);
+
+                section.VerticalDirection = Vector3d.ZAxis;
+                section.ViewingDirection  = viewDir;
                 section.TopPlane    =  100000;
                 section.BottomPlane = -100000;
 
